@@ -3,6 +3,8 @@ from ultralytics import YOLO
 import torch
 from datetime import datetime
 
+DT_FORMAT_STR = "%Y-%m-%d_%H%M"
+
 def capture(video_capture, file_name: str = "output.mp4", duration: float = 60) -> None:
     """
     Function to capture webcam video for a set duration
@@ -38,14 +40,14 @@ def capture(video_capture, file_name: str = "output.mp4", duration: float = 60) 
 
 if __name__ == "__main__":
 
-    model = YOLO("yolov8m.pt")
+    model = YOLO("yolov8l.pt")
 
     vidcap = cv2.VideoCapture(0)
 
     vidcap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
     vidcap.set(cv2.CAP_PROP_FPS, 20)
-    vidcap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    vidcap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    vidcap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+    vidcap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
 
     # capture(vidcap, duration=10)
 
@@ -58,10 +60,14 @@ if __name__ == "__main__":
 
         suc, img = vidcap.read()
 
-        results = model(source=img, classes=[bird_class], imgsz=(480, 640))
+        img = img[:800, :1280]
+
+        results = model(source=img, classes=[bird_class], imgsz=(1056, 1920), augment=True, conf=0.5)
 
         if bird_class in results[0].boxes.cls:
-            capture(vidcap, f"output{datetime.now()}.mp4", 60)
+            now = datetime.now().strftime(DT_FORMAT_STR)
+            results[0].save(f"trigger{now}.jpg")
+            capture(vidcap, f"output{now}.mp4", 60)
             time.sleep(60)
 
 
