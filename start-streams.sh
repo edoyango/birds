@@ -1,1 +1,1 @@
-ffmpeg -thread_queue_size 1600 -f avfoundation -framerate 30 -video_size 1280x720 -i "0" -f lavfi -i anullsrc -c:v libx264 -pix_fmt yuv420p -g 60 -c:a aac -map 0:v -map 1:a -f tee '[f=flv]rtmp://a.rtmp.youtube.com/live2/|[f=mpegts]udp://127.0.0.1:1234'
+ffmpeg -thread_queue_size 5040 -f v4l2 -input_format mjpeg -video_size 1920x1080 -i /dev/video0 -f lavfi -i anullsrc -g 60 -c:v h264_nvenc -preset slow -maxrate 6800K -bufsize 15000K -c:a aac -b:v 6800K -pix_fmt yuv420p -map 0:v -map 1:a -f flv rtmp://a.rtmp.youtube.com/live2/$YTL_KEY
