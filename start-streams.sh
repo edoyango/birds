@@ -1,0 +1,1 @@
+ffmpeg -thread_queue_size 1600 -f avfoundation -framerate 30 -video_size 1280x720 -i "0" -f lavfi -i anullsrc -c:v libx264 -pix_fmt yuv420p -g 60 -c:a aac -map 0:v -map 1:a -f tee '[f=flv]rtmp://a.rtmp.youtube.com/live2/|[f=mpegts]udp://127.0.0.1:1234'
