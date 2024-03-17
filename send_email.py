@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import smtplib
 from email.message import EmailMessage
 from email.utils import make_msgid

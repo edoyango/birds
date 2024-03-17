@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import cv2, time, os
 from ultralytics import YOLO
 from datetime import datetime
