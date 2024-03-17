@@ -1,74 +1,53 @@
-import os, torch, cv2, numpy as np, time
+import cv2, time, os
 from ultralytics import YOLO
-import torch
 from datetime import datetime
 
-DT_FORMAT_STR = "%Y-%m-%d_%H%M"
+DT_FORMAT_STR = "%Y-%m-%d_%H%M%S"
 
-def capture(video_capture, file_name: str = "output.mp4", duration: float = 60) -> None:
-    """
-    Function to capture webcam video for a set duration
-    """
-
-    # create video writer opbject
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    size = (
-        int(video_capture.get(cv2.CAP_PROP_FRAME_WIDTH)), 
-        int(video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    )
-    out = cv2.VideoWriter(file_name, 
-        fourcc, 
-        video_capture.get(cv2.CAP_PROP_FPS), 
-        size
-    )
-
-    start = time.monotonic()
-
-    success = True
-    while time.monotonic() - start < duration and success:
-
-        success, frame = video_capture.read()
-
-        out.write(frame)
-
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-    out.release()
-
-
+TIME_FORMAT_STR = "%H-%M-%S"
+DATE_FORMAT_STR = "%Y-%m-%d"
 
 if __name__ == "__main__":
 
     model = YOLO("yolov8l.pt")
 
-    vidcap = cv2.VideoCapture(0)
+    vidcap = cv2.VideoCapture("rtmp://localhost/live/birbs")
 
-    vidcap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-    vidcap.set(cv2.CAP_PROP_FPS, 20)
-    vidcap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-    vidcap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+    if not vidcap.isOpened():
+        raise RuntimeError("Failed to open stream")
 
-    # capture(vidcap, duration=10)
+    x = int(vidcap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    y = int(vidcap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     for k, v in model.names.items():
         if v == "bird":
             bird_class = k
 
-    suc = True
+    suc, img = vidcap.read()
+    last = 0
     while suc:
+
+        img_cropped = img[376:1080, :].copy()
+
+        if time.monotonic() - last > 10:
+            last = time.monotonic()
+            results = model(source=img_cropped, classes=[bird_class], augment=True, conf=0.4, imgsz=(y-376, x))
+
+            if bird_class in results[0].boxes.cls:
+                print("I saw a bird!\n")
+                now = datetime.now()
+                trigger_dir = os.path.join("observations", "triggers", now.strftime(DATE_FORMAT_STR))
+                original_dir = os.path.join("observations", "originals", now.strftime(DATE_FORMAT_STR))
+                fsuffix = f"{now.strftime(TIME_FORMAT_STR)}.jpg"
+                os.makedirs(trigger_dir, exist_ok=True)
+                os.makedirs(original_dir, exist_ok=True)
+                results[0].save(os.path.join(trigger_dir, f"trigger_{fsuffix}"))
+                cv2.imwrite(os.path.join(original_dir, f"original_{fsuffix}"), img)
 
         suc, img = vidcap.read()
 
-        img = img[:800, :1280]
-
-        results = model(source=img, classes=[bird_class], imgsz=(1056, 1920), augment=True, conf=0.5)
-
-        if bird_class in results[0].boxes.cls:
-            now = datetime.now().strftime(DT_FORMAT_STR)
-            results[0].save(f"trigger{now}.jpg")
-            capture(vidcap, f"output{now}.mp4", 60)
-            time.sleep(60)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
 
     vidcap.release()
