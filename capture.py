@@ -36,8 +36,8 @@ if __name__ == "__main__":
             if bird_class in results[0].boxes.cls:
                 print("I saw a bird!\n")
                 now = datetime.now()
-                trigger_dir = os.path.join("observations", "triggers", now.strftime(DATE_FORMAT_STR))
-                original_dir = os.path.join("observations", "originals", now.strftime(DATE_FORMAT_STR))
+                trigger_dir = os.path.join("observations", now.strftime(DATE_FORMAT_STR), "triggers")
+                original_dir = os.path.join("observations", now.strftime(DATE_FORMAT_STR), "originals")
                 fsuffix = f"{now.strftime(TIME_FORMAT_STR)}.jpg"
                 os.makedirs(trigger_dir, exist_ok=True)
                 os.makedirs(original_dir, exist_ok=True)
