@@ -8,7 +8,7 @@ def validate_df(df):
     if not has_right_columns:
         raise RuntimeError("Input CSV is missing NAME and EMAIL columns!")
 
-    looks_like_email = df["EMAIL"].contains('@').all()
+    looks_like_email = df["EMAIL"].str.contains('@').all()
 
     if not looks_like_email:
         raise RuntimeError("At least one of the emails don't looke like an email!")
