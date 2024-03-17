@@ -13,7 +13,8 @@ drive_link=$(rclone link google-drive-birds:/$date)
 
 python3 send_email_from_csv.py \
     -s "Birb watcher update" \
-    edwardyang125@gmail.com \
+    eds.birb.watcher@gmail.com \
+    "Birb Watcher" \
     email-lists.csv \
     "Hi {FIRST},
 
