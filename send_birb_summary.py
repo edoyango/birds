@@ -1,4 +1,4 @@
-from send_email import send_email
+from send_email import send_email_with_embedded_image, send_email
 import pandas as pd
 
 def validate_df(df):
@@ -13,7 +13,7 @@ def validate_df(df):
     if not looks_like_email:
         raise RuntimeError("At least one of the emails don't looke like an email!")
 
-def parse_csv_and_send(sender_name, sender_email, pwd, csv_file, subject, body_template):
+def parse_csv_and_send(sender_name, sender_email, pwd, csv_file, subject, body_template, imgpath=None):
 
     df = pd.read_csv(csv_file)
 
@@ -22,11 +22,16 @@ def parse_csv_and_send(sender_name, sender_email, pwd, csv_file, subject, body_t
     df[["FIRST", "LAST"]] = df["NAME"].str.split(" ", n=1, expand=True)
 
     for _, row in df.iterrows():
-        msg = body_template.format(
-            FIRST=row["FIRST"],
-            LAST=row["LAST"],
-            NAME=row["NAME"])
-        send_email(sender_name, sender_email, pwd, row["NAME"], row["EMAIL"], subject, msg)
+
+        format_dict = {
+            "FIRST": row["FIRST"],
+            "LAST": row["LAST"],
+            "NAME": row["NAME"]
+        }
+        if imgpath:
+            send_email_with_embedded_image(sender_name, sender_email, pwd, row["NAME"], row["EMAIL"], subject, body_template, format_dict, imgpath)
+        else:
+            send_email(sender_name, sender_email, pwd, row["NAME"], row["EMAIL"], subject, body_template, format_dict)
 
 if __name__=="__main__":
 
@@ -41,6 +46,7 @@ if __name__=="__main__":
     parser.add_argument("CSV", help="CSV file to pull recipients from.")
     parser.add_argument("body", help="Email body text. Instances of \{FIRST\} and \{LAST\} will be replaced with first and last names, respectively. \{NAME\} will be replaced with full name.")
     parser.add_argument("-s", "--subject", help="Email subject line (optional).")
+    parser.add_argument("-i", "--image", help="Path to image to send with the summary.")
 
     args = parser.parse_args()
     
@@ -54,5 +60,6 @@ if __name__=="__main__":
         pwd,
         args.CSV,
         args.subject,
-        args.body
+        args.body,
+        args.image
     )
