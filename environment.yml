@@ -1,0 +1,12 @@
+name: base
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - pytorch
+  - torchvision
+  - ffmpeg
+  - pytorch-cuda
+  - pip:
+    - ultralytics
