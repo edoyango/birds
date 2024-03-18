@@ -1,0 +1,6 @@
+services:
+  rtmp-server:
+    image: ${NGINX_RTMP_DOCKER_IMG}
+    container_name: rtmp-server-container
+    ports:
+      - 1935:1935
