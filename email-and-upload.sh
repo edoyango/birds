@@ -16,7 +16,7 @@ drive_link=$(rclone link google-drive-birds:/$date)
 
 python3 send_birb_summary.py \
     -s "Birb watcher update" \
-    -i stacked_image.jpg \
+    -i observations/$date/sample.jpg \
     eds.birb.watcher@gmail.com \
     "Birb Watcher" \
     email-lists.csv \
