@@ -24,3 +24,20 @@ services:
     image: ${FFMPEG_DOCKER_IMG}
     container_name: ffmpeg-pusher
     command: ffmpeg -i rtmp://rtmp-server/live/birbs -c copy -f flv rtmp://a.rtmp.youtube.com/live2/${YT_LIVE_KEY}
+  detect:
+    depends_on:
+      - stream
+      - rtmp-server
+    image: ${YOLO_DOCKER_IMG}
+    container_name: birb-detector
+    command: python capture.py -l rtmp://rtmp-server/live/birbs
+    volumes:
+      - .:/tmp/birds
+    working_dir: /tmp/birds
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

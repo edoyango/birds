@@ -11,9 +11,22 @@ DATE_FORMAT_STR = "%Y-%m-%d"
 
 if __name__ == "__main__":
 
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="bird-detector.py",
+        description="Detects birds from a given rtmp stream link and saves images of the brids detected."
+    )
+    parser.add_argument("-l", "--link", 
+                        help="rtmp stream to pull from", 
+                        default="rtmp://localhost/live/birbs"
+                        )
+
+    args = parser.parse_args()
+
     model = YOLO("yolov8l.pt")
 
-    vidcap = cv2.VideoCapture("rtmp://localhost/live/birbs")
+    vidcap = cv2.VideoCapture(args.link)
 
     if not vidcap.isOpened():
         raise RuntimeError("Failed to open stream")
@@ -25,14 +38,17 @@ if __name__ == "__main__":
         if v == "bird":
             bird_class = k
 
-    suc, img = vidcap.read()
     last = 0
+    suc = True
     while suc:
 
-        img_cropped = img[376:1080, :].copy()
 
         if time.monotonic() - last > 10:
+            suc, img = vidcap.read()
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
             last = time.monotonic()
+            img_cropped = img[376:1080, :].copy()
             results = model(source=img_cropped, classes=[bird_class], augment=True, conf=0.4, imgsz=(y-376, x))
 
             if bird_class in results[0].boxes.cls:
@@ -46,10 +62,10 @@ if __name__ == "__main__":
                 results[0].save(os.path.join(trigger_dir, f"trigger_{fsuffix}"))
                 cv2.imwrite(os.path.join(original_dir, f"original_{fsuffix}"), img)
 
-        suc, img = vidcap.read()
-
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        else:
+            suc = vidcap.grab()
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
 
 
     vidcap.release()
