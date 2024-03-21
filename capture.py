@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import cv2, time, os
+import cv2, time, os, stat
 from ultralytics import YOLO
 from datetime import datetime
 
@@ -52,15 +52,27 @@ if __name__ == "__main__":
             results = model(source=img_cropped, classes=[bird_class], augment=True, conf=0.4, imgsz=(y-376, x))
 
             if bird_class in results[0].boxes.cls:
-                print("I saw a bird!\n")
+
                 now = datetime.now()
-                trigger_dir = os.path.join("observations", now.strftime(DATE_FORMAT_STR), "triggers")
-                original_dir = os.path.join("observations", now.strftime(DATE_FORMAT_STR), "originals")
+                today = now.strftime(DATE_FORMAT_STR)
                 fsuffix = f"{now.strftime(TIME_FORMAT_STR)}.jpg"
+                today_dir = os.path.join("observations", today)
+                trigger_dir = os.path.join(today_dir, "triggers")
+                trigger_img = os.path.join(trigger_dir, f"trigger_{fsuffix}")
+                original_dir = os.path.join(today_dir, "originals")
+                original_img = os.path.join(original_dir, f"original_{fsuffix}")
+                
                 os.makedirs(trigger_dir, exist_ok=True)
                 os.makedirs(original_dir, exist_ok=True)
-                results[0].save(os.path.join(trigger_dir, f"trigger_{fsuffix}"))
-                cv2.imwrite(os.path.join(original_dir, f"original_{fsuffix}"), img)
+                results[0].save(trigger_img)
+                cv2.imwrite(original_img, img)
+
+                # making sure all files are word rwxable
+                os.chmod(today_dir, 0o777)
+                os.chmod(trigger_dir, 0o777)
+                os.chmod(original_dir, 0o777)
+                os.chmod(trigger_img, 0o666)
+                os.chmod(original_img, 0o666)
 
         else:
             suc = vidcap.grab()

@@ -33,6 +33,7 @@ services:
     command: python capture.py -l rtmp://rtmp-server/live/birbs
     volumes:
       - .:/tmp/birds
+      - /etc/localtime:/etc/localtime:ro
     working_dir: /tmp/birds
     deploy:
       resources:
