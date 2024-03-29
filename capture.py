@@ -24,7 +24,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    model = YOLO("yolov8l.pt")
+    model = YOLO("yolov8s-240328.pt")
 
     vidcap = cv2.VideoCapture(args.link)
 
@@ -48,8 +48,8 @@ if __name__ == "__main__":
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
             last = time.monotonic()
-            img_cropped = img[376:1080, :].copy()
-            results = model(source=img_cropped, classes=[bird_class], augment=True, conf=0.4, imgsz=(y-376, x))
+            img_cropped = img[24:, :].copy()
+            results = model(source=img_cropped, classes=[bird_class], augment=True, conf=0.4, imgsz=(1056,1920))
 
             if bird_class in results[0].boxes.cls:
 
