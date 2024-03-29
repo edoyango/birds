@@ -30,7 +30,7 @@ services:
       - rtmp-server
     image: ${YOLO_DOCKER_IMG}
     container_name: birb-detector
-    command: python capture.py -l rtmp://rtmp-server/live/birbs
+    command: python capture.py -l rtmp://rtmp-server/live/birbs -d ${YOLO_DETECTOR_MODEL} -c ${YOLO_CLASSIFIER_MODEL}
     volumes:
       - .:/tmp/birds
       - /etc/localtime:/etc/localtime:ro

@@ -3,11 +3,35 @@
 import cv2, time, os, stat
 from ultralytics import YOLO
 from datetime import datetime
+import torch
 
 DT_FORMAT_STR = "%Y-%m-%d_%H%M%S"
 
 TIME_FORMAT_STR = "%H-%M-%S"
 DATE_FORMAT_STR = "%Y-%m-%d"
+
+def subclassify(detection_results, cls_model):
+
+    tmp_box_data = detection_results.boxes.data.clone()
+
+    res = cls_model(
+        [
+            detection_results[0].orig_img[box[1]:box[3], box[0]:box[2], :] for box in tmp_box_data.round().int()
+        ],
+        imgsz=64
+    )
+
+    if res[0].probs.top1conf.item() > 0.8:
+
+        tmp_box_data[:, -1] = torch.Tensor([i.probs.top1+1 for i in res])
+        detection_results.boxes.data = tmp_box_data
+        species_names = res[0].names
+        new_names = detection_results.names
+        for k, v in species_names.items():
+            new_names[k+1] = v
+        detection_results.names = new_names
+
+    return detection_results
 
 if __name__ == "__main__":
 
@@ -33,6 +57,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     model = YOLO(args.detection_model)
+    cls_model = YOLO(args.classifier_model)
 
     vidcap = cv2.VideoCapture(args.link)
 
@@ -61,6 +86,7 @@ if __name__ == "__main__":
 
             if bird_class in results[0].boxes.cls:
 
+                # setup filenames
                 now = datetime.now()
                 today = now.strftime(DATE_FORMAT_STR)
                 fsuffix = f"{now.strftime(TIME_FORMAT_STR)}.jpg"
@@ -70,12 +96,18 @@ if __name__ == "__main__":
                 original_dir = os.path.join(today_dir, "originals")
                 original_img = os.path.join(original_dir, f"original_{fsuffix}")
                 
+                # create directories
                 os.makedirs(trigger_dir, exist_ok=True)
                 os.makedirs(original_dir, exist_ok=True)
+
+                # apply subclassifier to detection results
+                subclassify(results[0], cls_model)
+
+                # save results to disk
                 results[0].save(trigger_img)
                 cv2.imwrite(original_img, img)
 
-                # making sure all files are word rwxable
+                # making sure all files are word rwxable for docker
                 os.chmod(today_dir, 0o777)
                 os.chmod(trigger_dir, 0o777)
                 os.chmod(original_dir, 0o777)
