@@ -21,10 +21,18 @@ if __name__ == "__main__":
                         help="rtmp stream to pull from", 
                         default="rtmp://localhost/live/birbs"
                         )
+    parser.add_argument("-d", "--detection-model",
+                        help="Model to use for detection.",
+                        default="yolov8s.pt"
+                        )
+    parser.add_argument("-c", "--classifier-model",
+                        help="Model to use for sub-classification.",
+                        default="yolov8s-cls.pt"
+                        )
 
     args = parser.parse_args()
 
-    model = YOLO("yolov8s-240328.pt")
+    model = YOLO(args.detection_model)
 
     vidcap = cv2.VideoCapture(args.link)
 
