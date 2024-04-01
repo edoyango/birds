@@ -82,7 +82,7 @@ if __name__ == "__main__":
                 break
             last = time.monotonic()
             img_cropped = img[24:, :].copy()
-            results = model(source=img_cropped, classes=[bird_class], augment=True, conf=0.4, imgsz=(1056,1920))
+            results = model(source=img_cropped, classes=[bird_class], augment=True, conf=0.5, imgsz=(1056,1920))
 
             if bird_class in results[0].boxes.cls:
 
@@ -95,6 +95,7 @@ if __name__ == "__main__":
                 trigger_img = os.path.join(trigger_dir, f"trigger_{fsuffix}")
                 original_dir = os.path.join(today_dir, "originals")
                 original_img = os.path.join(original_dir, f"original_{fsuffix}")
+                instances_dir = os.path.join(today_dir, "instances")
                 
                 # create directories
                 os.makedirs(trigger_dir, exist_ok=True)
@@ -106,11 +107,13 @@ if __name__ == "__main__":
                 # save results to disk
                 results[0].save(trigger_img)
                 cv2.imwrite(original_img, img)
+                results[0].save_crop(instances_dir)
 
                 # making sure all files are word rwxable for docker
                 os.chmod(today_dir, 0o777)
                 os.chmod(trigger_dir, 0o777)
                 os.chmod(original_dir, 0o777)
+                os.chmod(instances_dir, 0o777)
                 os.chmod(trigger_img, 0o666)
                 os.chmod(original_img, 0o666)
 
