@@ -10,28 +10,31 @@ DT_FORMAT_STR = "%Y-%m-%d_%H%M%S"
 TIME_FORMAT_STR = "%H-%M-%S"
 DATE_FORMAT_STR = "%Y-%m-%d"
 
+
 def subclassify(detection_results, cls_model):
 
     tmp_box_data = detection_results.boxes.data.clone()
 
     res = cls_model(
         [
-            detection_results[0].orig_img[box[1]:box[3], box[0]:box[2], :] for box in tmp_box_data.round().int()
+            detection_results[0].orig_img[box[1] : box[3], box[0] : box[2], :]
+            for box in tmp_box_data.round().int()
         ],
-        imgsz=64
+        imgsz=64,
     )
 
     if res[0].probs.top1conf.item() > 0.8:
 
-        tmp_box_data[:, -1] = torch.Tensor([i.probs.top1+1 for i in res])
+        tmp_box_data[:, -1] = torch.Tensor([i.probs.top1 + 1 for i in res])
         detection_results.boxes.data = tmp_box_data
         species_names = res[0].names
         new_names = detection_results.names
         for k, v in species_names.items():
-            new_names[k+1] = v
+            new_names[k + 1] = v
         detection_results.names = new_names
 
     return detection_results
+
 
 if __name__ == "__main__":
 
@@ -39,20 +42,26 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         prog="bird-detector.py",
-        description="Detects birds from a given rtmp stream link and saves images of the brids detected."
+        description="Detects birds from a given rtmp stream link and saves images of the brids detected.",
     )
-    parser.add_argument("-l", "--link", 
-                        help="rtmp stream to pull from", 
-                        default="rtmp://localhost/live/birbs"
-                        )
-    parser.add_argument("-d", "--detection-model",
-                        help="Model to use for detection.",
-                        default="yolov8s.pt"
-                        )
-    parser.add_argument("-c", "--classifier-model",
-                        help="Model to use for sub-classification.",
-                        default="yolov8s-cls.pt"
-                        )
+    parser.add_argument(
+        "-l",
+        "--link",
+        help="rtmp stream to pull from",
+        default="rtmp://localhost/live/birbs",
+    )
+    parser.add_argument(
+        "-d",
+        "--detection-model",
+        help="Model to use for detection.",
+        default="yolov8s.pt",
+    )
+    parser.add_argument(
+        "-c",
+        "--classifier-model",
+        help="Model to use for sub-classification.",
+        default="yolov8s-cls.pt",
+    )
 
     args = parser.parse_args()
 
@@ -78,14 +87,19 @@ if __name__ == "__main__":
     suc = True
     while suc:
 
-
         if time.monotonic() - last > 10:
             suc, img = vidcap.read()
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
             last = time.monotonic()
             img_cropped = img[24:, :].copy()
-            results = model(source=img_cropped, classes=[bird_class], augment=True, conf=0.5, imgsz=(1056,1920))
+            results = model(
+                source=img_cropped,
+                classes=[bird_class],
+                augment=True,
+                conf=0.5,
+                imgsz=(1056, 1920),
+            )
 
             if bird_class in results[0].boxes.cls:
 
@@ -99,7 +113,7 @@ if __name__ == "__main__":
                 original_dir = os.path.join(today_dir, "originals")
                 original_img = os.path.join(original_dir, f"original_{fsuffix}")
                 instances_dir = os.path.join(today_dir, "instances")
-                
+
                 # create directories
                 os.makedirs(trigger_dir, exist_ok=True)
                 os.makedirs(original_dir, exist_ok=True)
@@ -122,8 +136,7 @@ if __name__ == "__main__":
 
         else:
             suc = vidcap.grab()
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
-
 
     vidcap.release()

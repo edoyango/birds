@@ -1,5 +1,6 @@
 import glob, os, argparse, pprint, shutil
 
+
 def remove_spaces(f) -> None:
 
     newname = os.path.basename(f).replace(" ", "_")
@@ -7,26 +8,37 @@ def remove_spaces(f) -> None:
 
     os.rename(f, newpath)
 
+
 def preprocess_filenames(d) -> None:
 
-    fs = (os.path.join(d, f) for f in os.listdir(d) if os.path.isfile(os.path.join(d, f)))
+    fs = (
+        os.path.join(d, f) for f in os.listdir(d) if os.path.isfile(os.path.join(d, f))
+    )
 
     for f in fs:
         remove_spaces(f)
 
+
 def traverse_subdirs(d) -> None:
 
-    subdirs = (os.path.join(d, s) for s in os.listdir(d) if os.path.isdir(os.path.join(d, s)))
+    subdirs = (
+        os.path.join(d, s) for s in os.listdir(d) if os.path.isdir(os.path.join(d, s))
+    )
 
     for s in subdirs:
         preprocess_filenames(s)
+
 
 def split_data(d) -> None:
 
     classes = {}
 
     for s in (s for s in os.listdir(d) if os.path.isdir(os.path.join(d, s))):
-        classes[s] = [os.path.join(d, s, f) for f in os.listdir(os.path.join(d, s)) if os.path.isfile(os.path.join(d, s, f))]
+        classes[s] = [
+            os.path.join(d, s, f)
+            for f in os.listdir(os.path.join(d, s))
+            if os.path.isfile(os.path.join(d, s, f))
+        ]
 
     dataset = {
         i: {k: [] for k in classes.keys()} for i in ("train", "validation", "test")
@@ -34,12 +46,16 @@ def split_data(d) -> None:
 
     for c in classes.keys():
         ntotal = len(classes[c])
-        ntrain = int(0.7*ntotal)
-        nval = int(0.2*ntotal)
-        ntest = ntotal-ntrain-nval
+        ntrain = int(0.7 * ntotal)
+        nval = int(0.2 * ntotal)
+        ntest = ntotal - ntrain - nval
         dataset["train"][c] = [classes[c].pop() for _ in range(ntrain)]
-        dataset["validation"][c] = [classes[c].pop() for _ in range(ntrain, ntrain+nval)]
-        dataset["test"][c] = [classes[c].pop() for _ in range(ntrain+nval, ntrain+nval+ntest)]
+        dataset["validation"][c] = [
+            classes[c].pop() for _ in range(ntrain, ntrain + nval)
+        ]
+        dataset["test"][c] = [
+            classes[c].pop() for _ in range(ntrain + nval, ntrain + nval + ntest)
+        ]
 
     for i in ("train", "validation", "test"):
         for c in classes.keys():

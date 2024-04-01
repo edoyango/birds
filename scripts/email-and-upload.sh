@@ -20,11 +20,11 @@ drive_link=$(rclone link google-drive-birds:/$date)
 
 nbirbs=$(find observations/$date/instances -type f -name 'im.jpg*.jpg' | wc -l)
 
-birblist=$(for species in observations/$date/instances/*/; do echo "<li>"$(basename "$species"): $(ls "$species" | wc -l)"</li>"; done)
+birblist=$(for species in observations/"$date"/instances/*/; do echo "<li>$(basename "$species"): $(find "$species" -type f | wc -l)</li>"; done)
 
 python3 "$script_dir"/send_birb_summary.py \
     -s "Birb watcher update" \
-    -i observations/$date/sample.jpg \
+    -i observations/"$date"/sample.jpg \
     eds.birb.watcher@gmail.com \
     "Birb Watcher" \
     "$email_list" \
