@@ -1,0 +1,2 @@
+yolov8m-birbs.pt filter=lfs diff=lfs merge=lfs -text
+yolov8m-cls-birbs.pt filter=lfs diff=lfs merge=lfs -text
