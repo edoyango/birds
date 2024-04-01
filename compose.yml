@@ -2,7 +2,7 @@ services:
   detect:
     image: ${YOLO_DOCKER_IMG}
     container_name: birb-detector
-    command: python capture.py -l 0 -d ${YOLO_DETECTOR_MODEL} -c ${YOLO_CLASSIFIER_MODEL}
+    command: python scripts/capture.py -l 0 -d models/${YOLO_DETECTOR_MODEL} -c models/${YOLO_CLASSIFIER_MODEL}
     volumes:
       - .:/tmp/birds
       - /etc/localtime:/etc/localtime:ro
