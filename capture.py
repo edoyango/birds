@@ -59,7 +59,10 @@ if __name__ == "__main__":
     model = YOLO(args.detection_model)
     cls_model = YOLO(args.classifier_model)
 
-    vidcap = cv2.VideoCapture(args.link)
+    try:
+        vidcap = cv2.VideoCapture(int(args.link))
+    except:
+        vidcap = cv2.VideoCapture(args.link)
 
     if not vidcap.isOpened():
         raise RuntimeError("Failed to open stream")
