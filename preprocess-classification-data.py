@@ -1,4 +1,4 @@
-import glob, os, argparse, pprint, shutil
+import glob, os, argparse, pprint, shutil, random
 
 def remove_spaces(f) -> None:
 
@@ -27,6 +27,7 @@ def split_data(d) -> None:
 
     for s in (s for s in os.listdir(d) if os.path.isdir(os.path.join(d, s))):
         classes[s] = [os.path.join(d, s, f) for f in os.listdir(os.path.join(d, s)) if os.path.isfile(os.path.join(d, s, f))]
+        random.shuffle(classes[s])
 
     dataset = {
         i: {k: [] for k in classes.keys()} for i in ("train", "validation", "test")
