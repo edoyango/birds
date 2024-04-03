@@ -112,31 +112,25 @@ if __name__ == "__main__":
     test_dir = os.path.join(args.dir, "test")
 
     for img, lbl in train_data:
-        try:
-            shutil.move(img, os.path.join(train_dir, "images"))
-        except:
-            pass
-        try:
-            shutil.move(lbl, os.path.join(train_dir, "labels"))
-        except:
-            pass
+        new_img_path = os.path.join(test_dir, "images")
+        new_lbl_path = os.path.join(test_dir, "labels")
+        if img != new_img_path:
+            shutil.move(img, new_img_path)
+        if lbl != new_lbl_path:
+            shutil.move(lbl, new_lbl_path)
 
     for img, lbl in val_data:
-        try:
-            shutil.move(img, os.path.join(val_dir, "images"))
-        except:
-            pass
-        try:
-            shutil.move(lbl, os.path.join(val_dir, "labels"))
-        except:
-            pass
+        new_img_path = os.path.join(val_dir, "images")
+        new_lbl_path = os.path.join(val_dir, "labels")
+        if img != new_img_path:
+            shutil.move(img, new_img_path)
+        if lbl != new_lbl_path:
+            shutil.move(lbl, new_lbl_path)
 
     for img, lbl in test_data:
-        try:
-            shutil.move(img, os.path.join(test_dir, "images"))
-        except:
-            pass
-        try:
-            shutil.move(lbl, os.path.join(test_dir, "labels"))
-        except:
-            pass
+        new_img_path = os.path.join(test_dir, "images")
+        new_lbl_path = os.path.join(test_dir, "labels")
+        if img != new_img_path:
+            shutil.move(img, new_img_path)
+        if lbl != new_lbl_path:
+            shutil.move(lbl, new_lbl_path)
