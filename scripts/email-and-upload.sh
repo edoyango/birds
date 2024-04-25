@@ -15,6 +15,8 @@ python3 "$script_dir"/stack_sample_images.py observations/$date/triggers observa
 # copy new files
 rclone copy observations/ google-drive-birds:/
 
+exit 0
+
 # create a public, read-only link to the folder
 drive_link=$(rclone link google-drive-birds:/$date)
 

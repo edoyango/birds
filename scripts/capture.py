@@ -24,13 +24,13 @@ def subclassify(detection_results, cls_model):
     )
 
     if res[0].probs.top1conf.item() > 0.8:
-
-        tmp_box_data[:, -1] = torch.Tensor([i.probs.top1 + 1 for i in res])
+        nexisting_names = len(detection_results.names)
+        tmp_box_data[:, -1] = torch.Tensor([i.probs.top1 + nexisting_names for i in res])
         detection_results.boxes.data = tmp_box_data
         species_names = res[0].names
         new_names = detection_results.names
         for k, v in species_names.items():
-            new_names[k + 1] = v
+            new_names[k + nexisting_names] = v
         detection_results.names = new_names
 
     return detection_results
@@ -70,6 +70,10 @@ if __name__ == "__main__":
 
     try:
         vidcap = cv2.VideoCapture(int(args.link))
+        #vidcap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'))
+        vidcap.set(cv2.CAP_PROP_FRAME_WIDTH, 2304)
+        vidcap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1536)
+        #vidcap.set(cv2.CAP_PROP_FPS, 30)
     except:
         vidcap = cv2.VideoCapture(args.link)
 
@@ -84,6 +88,7 @@ if __name__ == "__main__":
             bird_class = k
 
     last = 0
+    last_spare = 0
     suc = True
     while suc:
 
@@ -92,13 +97,17 @@ if __name__ == "__main__":
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
             last = time.monotonic()
-            img_cropped = img[24:, :].copy()
+            #img_cropped = img[24:, :, :].copy()
+            img_cropped = img
             results = model(
                 source=img_cropped,
                 classes=[bird_class],
                 augment=True,
-                conf=0.5,
-                imgsz=(1056, 1920),
+                conf=0.516,
+                iou=0.5,
+                #imgsz=(1056, 1920),
+                #imgsz=(1536,2304)
+                imgsz=864
             )
 
             if bird_class in results[0].boxes.cls:
@@ -133,6 +142,33 @@ if __name__ == "__main__":
                 os.chmod(instances_dir, 0o777)
                 os.chmod(trigger_img, 0o666)
                 os.chmod(original_img, 0o666)
+
+        elif time.monotonic() - last_spare > 600:
+
+            last_spare = time.monotonic()
+
+            suc, img = vidcap.read()
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+            img_cropped = img[24:, :, :].copy()
+
+            # setup filenames
+            now = datetime.now()
+            today = now.strftime(DATE_FORMAT_STR)
+            fsuffix = f"{now.strftime(TIME_FORMAT_STR)}.jpg"
+            today_dir = os.path.join("observations", today)
+            spare_dir = os.path.join(today_dir, "spares")
+            spare_img = os.path.join(spare_dir, f"spare_{fsuffix}")
+
+            # create directories
+            os.makedirs(spare_dir, exist_ok=True)
+
+            # save results to disk
+            cv2.imwrite(spare_img, img)
+
+            # making sure all files are word rwxable for docker
+            os.chmod(today_dir, 0o777)
+            os.chmod(spare_dir, 0o777)
 
         else:
             suc = vidcap.grab()
