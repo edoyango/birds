@@ -62,7 +62,8 @@ def main(vidpath, model, outdir):
 
     model, bird_class_idx = get_model(model)
 
-    out_vid = None
+    trigger_out_vid = None
+    original_out_vid = None
     success = True
     nframe = 0
     vid_idx = 0
@@ -91,31 +92,47 @@ def main(vidpath, model, outdir):
             if wait_counter < WAITLIMIT:
                 # get annotated frame from yolo results
                 annotated_frame = yolo_res.plot(conf=False)
+                original_frame = yolo_res.orig_img
                 # create video if a video isn't currently open
-                if not out_vid or not out_vid.isOpened():
-                    subvid_name = create_new_fname(vidpath, nframe, fps, outdir, "trigger-")
-                    print(subvid_name)
-                    out_vid = create_output_video(subvid_name, cap)
+                if not trigger_out_vid or not trigger_out_vid.isOpened():
+                    trigger_subvid = create_new_fname(vidpath, nframe, fps, outdir, "trigger-")
+                    trigger_out_vid = create_output_video(trigger_subvid, cap)
+                if not original_out_vid or not original_out_vid.isOpened():
+                    original_subvid = create_new_fname(vidpath, nframe, fps, outdir, "original-")
+                    original_out_vid = create_output_video(original_subvid, cap)
                 # write the annotated frame
-                out_vid.write(annotated_frame)
+                trigger_out_vid.write(annotated_frame)
+                original_out_vid.write(original_frame)
                 if cv2.waitKey(1) & 0xFF == ord('s'):
                     break
             else:
                 # close the output video if it's open
-                if out_vid and out_vid.isOpened():
+                if trigger_out_vid and trigger_out_vid.isOpened():
                     # release video resources
-                    out_vid.release()
+                    trigger_out_vid.release()
                     # reopen video to check number of frames and get first frame
-                    out_vid = open_video(subvid_name)
-                    out_vid_nframes = out_vid.get(cv2.CAP_PROP_FRAME_COUNT)
-                    subvid_success, first_frame = out_vid.read()
-                    out_vid.release()
+                    trigger_out_vid = open_video(trigger_subvid)
+                    out_vid_nframes = trigger_out_vid.get(cv2.CAP_PROP_FRAME_COUNT)
+                    subvid_success, first_frame = trigger_out_vid.read()
+                    trigger_out_vid.release()
                     # save first frame as jpg and delete video if video is too short
                     if out_vid_nframes < 2*WAITLIMIT and subvid_success:
-                        cv2.imwrite(".".join(subvid_name.split(".")[:-1]) + ".jpg", first_frame)
-                        os.remove(subvid_name)
+                        cv2.imwrite(".".join(trigger_subvid.split(".")[:-1]) + ".jpg", first_frame)
+                        os.remove(trigger_subvid)
                     elif not subvid_success:
-                        raise RuntimeError(f"Problem with reading {subvid_name}!")
+                        raise RuntimeError(f"Problem with reading {trigger_subvid}!")
+                # do the same but for the original video
+                if original_out_vid and original_out_vid.isOpened():
+                    original_out_vid.release()
+                    original_out_vid = open_video(original_subvid)
+                    out_vid_nframes = original_out_vid.get(cv2.CAP_PROP_FRAME_COUNT)
+                    subvid_success, first_frame = original_out_vid.read()
+                    original_out_vid.release()
+                    if out_vid_nframes < 2*WAITLIMIT and subvid_success:
+                        cv2.imwrite(".".join(original_subvid.split(".")[:-1]) + ".jpg", first_frame)
+                        os.remove(original_subvid)
+                    elif not subvid_success:
+                        raise RuntimeError(f"Problem with reading {original_subvid}!")
                     vid_idx += 1
             nframe += 1
     
