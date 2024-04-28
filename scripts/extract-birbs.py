@@ -57,6 +57,10 @@ def create_new_fname(vidpath, frame_idx, fps, outdir=None, prefix=""):
 
 def main(vidpath, model, outdir):
 
+    # setting up output directory
+    os.makedirs(os.path.join(outdir, "triggers"), exist_ok=True)
+    os.makedirs(os.path.join(outdir, "originals"), exist_ok=True)
+
     cap = open_video(vidpath)
     fps = cap.get(cv2.CAP_PROP_FPS)
 
@@ -95,10 +99,10 @@ def main(vidpath, model, outdir):
                 original_frame = yolo_res.orig_img
                 # create video if a video isn't currently open
                 if not trigger_out_vid or not trigger_out_vid.isOpened():
-                    trigger_subvid = create_new_fname(vidpath, nframe, fps, outdir, "trigger-")
+                    trigger_subvid = create_new_fname(vidpath, nframe, fps, outdir, os.path.join("triggers", "trigger-"))
                     trigger_out_vid = create_output_video(trigger_subvid, cap)
                 if not original_out_vid or not original_out_vid.isOpened():
-                    original_subvid = create_new_fname(vidpath, nframe, fps, outdir, "original-")
+                    original_subvid = create_new_fname(vidpath, nframe, fps, outdir, os.path.join("originals", "original-"))
                     original_out_vid = create_output_video(original_subvid, cap)
                 # write the annotated frame
                 trigger_out_vid.write(annotated_frame)
