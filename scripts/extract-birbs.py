@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import cv2
 import os
 import datetime
@@ -213,8 +215,6 @@ Beginning processing...
     # Closes all the frames 
     cv2.destroyAllWindows() 
        
-    print("The video was successfully saved") 
-
 if __name__ == "__main__":
 
     import argparse
