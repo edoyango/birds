@@ -200,10 +200,11 @@ Beginning processing...
                     out_vid_nframes = original_out_vid.get(cv2.CAP_PROP_FRAME_COUNT)
                     subvid_success, first_frame = original_out_vid.read()
                     original_out_vid.release()
-                    if out_vid_nframes < 2*WAITLIMIT and subvid_success:
-                        cv2.imwrite(".".join(original_subvid.split(".")[:-1]) + ".jpg", first_frame)
-                        os.remove(original_subvid)
-                    elif not subvid_success:
+                    if subvid_success:
+                        if out_vid_nframes < 2*WAITLIMIT:
+                            cv2.imwrite(".".join(original_subvid.split(".")[:-1]) + ".jpg", first_frame)
+                            os.remove(original_subvid)
+                    else:
                         raise RuntimeError(f"Problem with reading {original_subvid}!")
                     vid_idx += 1
             nframe += 1
