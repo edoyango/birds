@@ -1,0 +1,1 @@
+../../scripts/send_birb_summary.py

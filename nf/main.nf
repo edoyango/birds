@@ -7,7 +7,6 @@ include {RCLONE_COPY_UP as RCLONE_UPLOAD_TRIGGERS} from "./modules/rclone.nf"
 include {RCLONE_COPY_UP as RCLONE_UPLOAD_ORIGINALS} from "./modules/rclone.nf"
 include {RCLONE_COPY_UP as RCLONE_UPLOAD_INSTANCES} from "./modules/rclone.nf"
 include {RCLONE_COPY_UP as RCLONE_UPLOAD_GIF} from "./modules/rclone.nf"
-include {EMAIL} from "./modules/email.nf"
 
 process ORGANISE {
 
@@ -60,6 +59,55 @@ process GIFSICLE {
     """
 }
 
+process EMAIL {
+
+    cpus 1
+    memory "1 GB"
+    executor "local"
+
+    input:
+    each date
+    path(gif)
+    path(instances)
+    path(email_list)
+    each rclone_prefix
+
+    shell:
+    '''
+    # create a google drive link
+    gdrive_link=$(rclone link "!{rclone_prefix}/!{date}/triggers")
+    find -L -maxdepth 1 -name 'instances-*.tar' -exec tar -tf {} \\; > instances_tar_contents.txt
+    nbirbs=$(grep .jpg instances_tar_contents.txt | wc -l)
+    birblist=$(\\
+    for species in $(grep -v .jpg instances_tar_contents.txt | awk -F/ '{ if (NF>3) print $3 }' | sort | uniq); \\
+    do \\
+        echo "<li>${species}: $(awk -F/ -v species=${species} '$3==species{ print $4 }' instances_tar_contents.txt | wc -l)</li>"; \\
+    done)
+
+    send_birb_summary.py \\
+        -s "Birb watcher update" \\
+        -i "!{gif}" \\
+        eds.birb.watcher@gmail.com \\
+        "Birb Watcher" \\
+        "!{email_list}" \\
+        "<html>
+        <body>
+            <p>Hi {FIRST},</p>
+            <p>I saw birds ${nbirbs} times today! These were:</p>
+            <ul>
+            $birblist
+            </ul>
+            <p>You can view all the recordings of birds I saw today via <a href=\"${gdrive_link}\">this google drive link</a>!</p>
+            <p>Send Ed a message if you see that the model has incorrectly identified a bird!<br>Those images can be used to improve the AI model's accuracy.</p>
+        <p>Here's one of the videos with birds:</p>
+            <img src=\"cid:{image_cid}\">
+            <p>Hope you have a great day!</p>
+            <p>Regards,<br>Ed's Birb Watcher</p>
+        </body>
+        </html>"
+    '''
+}
+
 workflow birbs_processing {
 
     ch_date = channel.of(params.date)
@@ -99,6 +147,9 @@ workflow birbs_processing {
     RCLONE_UPLOAD_TRIGGERS(ch_date, ch_rclone_prefix, ch_triggers)
     RCLONE_UPLOAD_ORIGINALS(ch_date, ch_rclone_prefix, ch_originals)
     RCLONE_UPLOAD_INSTANCES(ch_date, ch_rclone_prefix, ch_instances)
+
+    ch_email_list = channel.fromPath(params.email_list, checkIfExists: true)
+    EMAIL(ch_date, ch_gif, ch_instances, ch_email_list, ch_rclone_prefix)
         
 }
 
