@@ -42,16 +42,18 @@ def create_output_video(vname, cap):
         raise RuntimeError(f"Failed to open {vname}")
     else:
         return out
+
+def add_seconds_to_timestring(timestring: str, seconds: int):
+    time_obj = datetime.datetime.strptime(timestring, "%H-%M-%S")
+    time_diff = datetime.timedelta(seconds=seconds)
+    return (time_obj + time_diff).strftime("%H-%M-%S")
         
 def create_new_fname(vidpath, frame_idx, fps, outdir=None, prefix=""):
     vid_dir = os.path.dirname(vidpath)
     split_vidname = os.path.basename(vidpath).split(".")
     ext = split_vidname[-1]
     time_str = ".".join(split_vidname[:-1])
-    time_obj = datetime.datetime.strptime(time_str, "%H-%M-%S")
-    time_diff = datetime.timedelta(seconds=frame_idx/fps)
-    new_time = time_obj + time_diff
-    outfile = f"{prefix}{new_time.strftime('%H-%M-%S')}.{ext}"
+    outfile = f"{prefix}{add_seconds_to_timestring(time_str, frame_idx/fps)}.{ext}"
     if outdir:
         outpath = os.path.join(outdir, outfile)
     else:
@@ -103,9 +105,15 @@ def count_detections(detection_result):
 
 def main(vidpath, model_detect_path, outdir, model_cls_path = None):
 
+    vidname = ".".join(os.path.basename(vidpath).split(".")[:-1])
+
     # setting up output directory
-    os.makedirs(os.path.join(outdir, "triggers"), exist_ok=True)
-    os.makedirs(os.path.join(outdir, "originals"), exist_ok=True)
+    triggers_dir = os.path.join(outdir, "triggers")
+    originals_dir = os.path.join(outdir, "originals")
+    instances_dir = os.path.join(outdir, "instances")
+    os.makedirs(triggers_dir, exist_ok=True)
+    os.makedirs(originals_dir, exist_ok=True)
+    os.makedirs(instances_dir, exist_ok=True)
 
     cap = open_video(vidpath)
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -159,6 +167,7 @@ Beginning processing...
                     for k, v in count_detections(yolo_res).items():
                         print(f"{k}: {v}", end=" ")
                     print()
+                    yolo_res.save_crop(instances_dir, add_seconds_to_timestring(vidname, nframe/fps))
                 else:
                     print("no bird detected")
                 # get annotated frame from yolo results
