@@ -11,8 +11,9 @@ include {EMAIL} from "./modules/email.nf"
 
 process ORGANISE {
 
-    cpus 1
-    memory "1 GB"
+    cpus 8
+    memory "8 GB"
+    container "linuxserver/ffmpeg"
 
     input:
     path(encoded_videos)
@@ -28,11 +29,16 @@ process ORGANISE {
     '''
     mkdir triggers originals instances
     cd triggers
-    cp -s ../trigger-*.{mp4,jpg} .
+    cp -s ../trigger-*.mp4 . &
+    tar --dereference -cf jpgs.tar ../trigger-*.jpg &
     cd ../originals
-    cp -s ../original-*.{mp4,jpg} .
+    cp -s ../original-*.mp4 . &
+    tar --dereference -cf jpgs.tar ../original-*.jpg &
     cd ..
-    find -L -name 'instances-*' -maxdepth 1 -type d -exec tar --dereference -cf {}.tar {} \\;
+    find -L -name 'instances-*' -maxdepth 1 -type d -exec tar --dereference -cf {}.tar {} \\; &
+    ffmpeg -y -framerate 1/2 -pattern_type glob -i 'trigger-*.jpg' -c:v libx265 -x265-params pools=!{task.cpus} -crf 28 triggers/jpgs.mp4
+    ffmpeg -y -framerate 1/2 -pattern_type glob -i 'original-*.jpg' -c:v libx265 -x265-params pools=!{task.cpus} -crf 28 originals/jpgs.mp4
+    wait
     '''
 }
 
