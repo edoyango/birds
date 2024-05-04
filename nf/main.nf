@@ -93,7 +93,7 @@ process EMAIL {
         "<html>
         <body>
             <p>Hi {FIRST},</p>
-            <p>I saw birds ${nbirbs} times today! These were:</p>
+            <p>I've been recording videos all day, and (I think) I saw ${nbirbs} birds across all individual frames today! I thought these were:</p>
             <ul>
             $birblist
             </ul>
