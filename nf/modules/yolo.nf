@@ -12,7 +12,7 @@ process YOLO {
 
     output:
     path("*-${video.baseName}/*.mkv"), optional: true // vidos
-    path("*-${video.baseName}/*.jpg"), optional: true // images
+    path("*-${video.baseName}/first_frames/*.jpg"), optional: true // images
     path("instances-${video.baseName}", type: "dir") // instances images
 
     script:

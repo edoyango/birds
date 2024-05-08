@@ -64,6 +64,7 @@ process EMAIL {
     cpus 1
     memory "1 GB"
     executor "local"
+    module "rclone"
 
     input:
     each date

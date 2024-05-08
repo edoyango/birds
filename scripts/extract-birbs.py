@@ -111,9 +111,13 @@ def main(vidpath, model_detect_path, outdir, model_cls_path = None):
     triggers_dir = os.path.join(outdir, "triggers")
     originals_dir = os.path.join(outdir, "originals")
     instances_dir = os.path.join(outdir, "instances")
+    originals_first_frames_dir = os.path.join(originals_dir, "first_frames")
+    triggers_first_frames_dir = os.path.join(triggers_dir, "first_frames")
     os.makedirs(triggers_dir, exist_ok=True)
     os.makedirs(originals_dir, exist_ok=True)
     os.makedirs(instances_dir, exist_ok=True)
+    os.makedirs(originals_first_frames_dir, exist_ok=True)
+    os.makedirs(triggers_first_frames_dir, exist_ok=True)
 
     cap = open_video(vidpath)
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -177,9 +181,17 @@ Beginning processing...
                 if not trigger_out_vid or not trigger_out_vid.isOpened():
                     trigger_subvid = create_new_fname(vidpath, nframe, fps, outdir, os.path.join("triggers", "trigger-"))
                     trigger_out_vid = create_output_video(trigger_subvid, cap)
+                    cv2.imwrite(
+                        os.path.join(triggers_first_frames_dir, f"trigger-{add_seconds_to_timestring(vidname, nframe/fps)}.jpg"), 
+                        annotated_frame
+                    )
                 if not original_out_vid or not original_out_vid.isOpened():
                     original_subvid = create_new_fname(vidpath, nframe, fps, outdir, os.path.join("originals", "original-"))
                     original_out_vid = create_output_video(original_subvid, cap)
+                    cv2.imwrite(
+                        os.path.join(originals_first_frames_dir, f"original-{add_seconds_to_timestring(vidname, nframe/fps)}.jpg"), 
+                        original_frame
+                    )
                 # write the annotated frame
                 trigger_out_vid.write(annotated_frame)
                 original_out_vid.write(original_frame)
@@ -194,27 +206,18 @@ Beginning processing...
                     # reopen video to check number of frames and get first frame
                     trigger_out_vid = open_video(trigger_subvid)
                     out_vid_nframes = trigger_out_vid.get(cv2.CAP_PROP_FRAME_COUNT)
-                    subvid_success, first_frame = trigger_out_vid.read()
                     trigger_out_vid.release()
                     # save first frame as jpg and delete video if video is too short
-                    if out_vid_nframes < 2*WAITLIMIT and subvid_success:
-                        cv2.imwrite(".".join(trigger_subvid.split(".")[:-1]) + ".jpg", first_frame)
+                    if out_vid_nframes < 2*WAITLIMIT:
                         os.remove(trigger_subvid)
-                    elif not subvid_success:
-                        raise RuntimeError(f"Problem with reading {trigger_subvid}!")
                 # do the same but for the original video
                 if original_out_vid and original_out_vid.isOpened():
                     original_out_vid.release()
                     original_out_vid = open_video(original_subvid)
                     out_vid_nframes = original_out_vid.get(cv2.CAP_PROP_FRAME_COUNT)
-                    subvid_success, first_frame = original_out_vid.read()
                     original_out_vid.release()
-                    if subvid_success:
-                        if out_vid_nframes < 2*WAITLIMIT:
-                            cv2.imwrite(".".join(original_subvid.split(".")[:-1]) + ".jpg", first_frame)
-                            os.remove(original_subvid)
-                    else:
-                        raise RuntimeError(f"Problem with reading {original_subvid}!")
+                    if out_vid_nframes < 2*WAITLIMIT:
+                        os.remove(original_subvid)
                     vid_idx += 1
             nframe += 1
     
