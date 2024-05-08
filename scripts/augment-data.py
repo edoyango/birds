@@ -40,11 +40,10 @@ class albumentations_transformer:
                     A.GaussianBlur(p=0.2),
                     A.GaussNoise(p=0.2),
                     A.RandomBrightnessContrast(p=0.2),
-                    #A.Affine(p=0.2),
-                    A.Perspective(always_apply=True, p=0.2),
+                    A.Affine(p=0.2),
+                    A.Perspective( p=0.2),
                     A.ColorJitter(p=0.2),
                     A.Spatter(p=0.2),
-                    A.Downscale(interpolation=cv2.INTER_LINEAR, p=0.2),
                 ],
                 bbox_params=A.BboxParams(format="yolo"),
             )
@@ -56,11 +55,10 @@ class albumentations_transformer:
                     A.GaussianBlur(p=0.2),
                     A.GaussNoise(p=0.2),
                     A.RandomBrightnessContrast(p=0.2),
-                    #A.Affine(p=0.2),
-                    A.Perspective(always_apply=True, p=0.2),
+                    A.Affine(p=0.2),
+                    A.Perspective(p=0.2),
                     A.ColorJitter(p=0.2),
                     A.Spatter(p=0.2),
-                    A.Downscale(interpolation=cv2.INTER_LINEAR, p=0.2),
                 ],
             )
         outfiles = []
