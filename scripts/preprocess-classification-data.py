@@ -1,4 +1,5 @@
 import glob, os, argparse, pprint, shutil, random
+import cv2, albumentations
 
 
 def remove_spaces(f) -> None:
@@ -67,6 +68,41 @@ def split_data(d) -> None:
 
     for c in classes.keys():
         os.rmdir(os.path.join(d, c))
+
+    # augment the split data
+    TRANSFORM = albumentations.Compose(
+        [
+            albumentations.HorizontalFlip(p=0.1),
+            albumentations.VerticalFlip(p=0.1),
+            albumentations.GaussianBlur(p=0.1),
+            albumentations.GaussNoise(p=0.1),
+            albumentations.RandomBrightnessContrast(p=0.1),
+            albumentations.ColorJitter(p=0.1),
+            albumentations.Spatter(p=0.1),
+            albumentations.Rotate(limit=(-15,15), crop_border=True, p=0.1, always_apply=True)
+        ]
+    )
+    # first, find which class hass the most instances
+    maxinst = 0
+    for c in classes.keys(): maxinst = max(maxinst, len(dataset["train"][c]))
+    for c in classes.keys():
+        ninst = len(dataset["train"][c])
+        originals = os.listdir(os.path.join(d, "train", c))
+        noriginals = len(originals)
+        i = 0
+        while ninst < maxinst:
+            ii = i % noriginals
+            f = os.path.join(d, "train", c, originals[ii])
+            fsplit = f.split(".")
+            img = cv2.imread(f)
+            fname, fext = ".".join(fsplit[:-1]), fsplit[-1]
+            try:
+                img_t = TRANSFORM(image=img)["image"]
+                cv2.imwrite(f"{fname}_augmented{i//noriginals}.jpg", img_t)
+                ninst += 1
+            except:
+                pass
+            i+=1
 
 
 if __name__ == "__main__":
