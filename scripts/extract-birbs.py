@@ -155,15 +155,18 @@ Beginning processing...
             if success: frames.append(frame)
 
         # inference on frames batch
-        batch_res = model(
-            source=frames,
-            classes=[bird_class_idx],
-            augment=True,
-            conf=0.46,
-            iou=0.5,
-            imgsz=864,
-            verbose=False
-        )
+        if frames: 
+            batch_res = model(
+                source=frames,
+                classes=[bird_class_idx],
+                augment=True,
+                conf=0.46,
+                iou=0.5,
+                imgsz=864,
+                verbose=False
+            )
+        else:
+            batch_res = []
       
         for yolo_res in batch_res:
             print(f"frame {nframe+1}/{total_frames}", end=" ")
