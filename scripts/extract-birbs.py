@@ -120,7 +120,8 @@ def main(vidpath, model_detect_path, outdir, model_cls_path = None):
     os.makedirs(triggers_first_frames_dir, exist_ok=True)
 
     cap = open_video(vidpath)
-    fps = cap.get(cv2.CAP_PROP_FPS)
+    #fps = cap.get(cv2.CAP_PROP_FPS)
+    fps=10.0 # temporary fix
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     model, bird_class_idx = get_model(model_detect_path)
@@ -139,26 +140,33 @@ Beginning processing...
 
     trigger_out_vid = None
     original_out_vid = None
-    success = True
+    success = cap.isOpened()
     nframe = 0
     vid_idx = 0
     WAITLIMIT=2*fps # wait two seconds before closing video
     wait_counter = WAITLIMIT
+    batch_size = WAITLIMIT
     while success:
-        success, frame = cap.read()
+
+        # read frames into batch
+        frames = []
+        while success and len(frames) < batch_size:
+            success, frame = cap.read()
+            if success: frames.append(frame)
+
+        # inference on frames batch
+        batch_res = model(
+            source=frames,
+            classes=[bird_class_idx],
+            augment=True,
+            conf=0.46,
+            iou=0.5,
+            imgsz=864,
+            verbose=False
+        )
       
-        if success:
+        for yolo_res in batch_res:
             print(f"frame {nframe+1}/{total_frames}", end=" ")
-            # perform inference
-            yolo_res = model(
-                source=frame,
-                classes=[bird_class_idx],
-                augment=True,
-                conf=0.516,
-                iou=0.5,
-                imgsz=864,
-                verbose=False
-            )[0]
             # save bool indicating whether a bird was detected
             bird_detected = bird_class_idx in yolo_res.boxes.cls
             # update wait_counter if bird not detected
@@ -182,14 +190,14 @@ Beginning processing...
                     trigger_subvid = create_new_fname(vidpath, nframe, fps, outdir, os.path.join("triggers", "trigger-"))
                     trigger_out_vid = create_output_video(trigger_subvid, cap)
                     cv2.imwrite(
-                        os.path.join(triggers_first_frames_dir, f"trigger-{add_seconds_to_timestring(vidname, nframe/fps)}.jpg"), 
+                        os.path.join(triggers_first_frames_dir, os.path.basename(trigger_subvid).split(".")[0] + ".jpg"), 
                         annotated_frame
                     )
                 if not original_out_vid or not original_out_vid.isOpened():
                     original_subvid = create_new_fname(vidpath, nframe, fps, outdir, os.path.join("originals", "original-"))
                     original_out_vid = create_output_video(original_subvid, cap)
                     cv2.imwrite(
-                        os.path.join(originals_first_frames_dir, f"original-{add_seconds_to_timestring(vidname, nframe/fps)}.jpg"), 
+                        os.path.join(originals_first_frames_dir, os.path.basename(original_subvid).split(".")[0] + ".jpg"), 
                         original_frame
                     )
                 # write the annotated frame
