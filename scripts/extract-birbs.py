@@ -7,6 +7,7 @@ import sys
 import torch
 import copy
 import ultralytics
+import pathlib
 
 def open_video(vname):
 
@@ -103,6 +104,82 @@ def count_detections(detection_result):
     
     return {detection_result.names[k]: v for k, v in counts.items()}
 
+class detected_birb_vid:
+
+    def __init__(self, reference_cap, reference_vidname, frame_offset, outdir, minframes):
+
+        # check that reference_cap is open
+        if not reference_cap.isOpened():
+            raise RuntimeError("Input reference video capture not opened!")
+        
+        # save reference cap meta data
+        self.fps = float(reference_cap.get(cv2.CAP_PROP_FPS))
+        self.width = int(reference_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.height = int(reference_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.minframes = minframes
+
+        # create paths for output original/trigger subvideos/images
+        rv = pathlib.Path(reference_vidname)
+        outpath = pathlib.Path(outdir)
+        if not rv.is_file():
+            raise RuntimeError("Input reference video path is not a file!")
+        reference_timestr = rv.stem
+        reference_time = datetime.datetime.strptime(reference_timestr, "%H-%M-%S")
+        self.start_time = reference_time + datetime.timedelta(seconds=frame_offset/self.fps)
+        self.start_timestr = self.start_time.strftime("%H-%M-%S")
+        self.original_vidpath = outpath.joinpath("originals", f"original-{self.start_timestr}.{rv.suffix}")
+        self.trigger_vidpath = outpath.joinpath("triggers", f"trigger-{self.start_timestr}.{rv.suffix}")
+        self.original_firstframepath = self.original_vidpath.with_suffix(".jpg")
+        self.trigger_firstframepath = self.trigger_vidpath.with_suffix(".jpg")
+
+        # open output subvideos
+        self.original_cap = cv2.VideoWriter(
+            self.original_vidpath,
+            cv2.VideoWriter_fourcc(*"MJPG"),
+            self.fps,
+            (self.width, self.height)
+        )
+        if not self.original_cap.isOpened(): raise RuntimeError("Couldn't create original video file")
+        self.trigger_cap = cv2.VideoWriter(
+            self.trigger_vidpath,
+            cv2.VideoWriter_fourcc(*"MJPG"),
+            self.fps,
+            (self.width, self.height)
+        )
+        if not self.original_cap.isOpened(): raise RuntimeError("Couldn't create trigger video file")
+
+        # video metadata
+        self.nframes = 0
+        self.ninstances = {}
+
+    def write(self, original_frame, trigger_frame, instances):
+
+        # save frame as image in case no frames have been written yet
+        if not self.nframes:
+            cv2.imwrite(self.original_firstframepath, original_frame)
+            cv2.imwrite(self.trigger_firstframepath, trigger_frame)
+        
+        self.original_cap.write(original_frame)
+        self.trigger_cap.write(trigger_frame)
+        if cv2.waitKey(1) & 0xFF == ord('s'):
+            pass
+
+        for k, v in instances.items():
+            try:
+                self.ninstances[k] += v
+            except KeyError:
+                self.ninstances[k] = v
+    
+    def close(self):
+        # release caps
+        self.original_cap.release()
+        self.trigger_cap.release()
+
+        # delete video if too short
+        if self.nframes < self.minframes:
+            os.remove(self.original_vidpath)
+            os.remove(self.trigger_vidpath)
+
 def main(vidpath, model_detect_path, outdir, model_cls_path = None):
 
     vidname = ".".join(os.path.basename(vidpath).split(".")[:-1])
@@ -142,7 +219,6 @@ Beginning processing...
     original_out_vid = None
     success = cap.isOpened()
     nframe = 0
-    vid_idx = 0
     WAITLIMIT=2*fps # wait two seconds before closing video
     wait_counter = WAITLIMIT
     batch_size = WAITLIMIT
@@ -229,7 +305,6 @@ Beginning processing...
                     original_out_vid.release()
                     if out_vid_nframes < 2*WAITLIMIT:
                         os.remove(original_subvid)
-                    vid_idx += 1
             nframe += 1
     
     cap.release() 
