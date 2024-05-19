@@ -127,21 +127,21 @@ class detected_birb_vid:
         reference_time = datetime.datetime.strptime(reference_timestr, "%H-%M-%S")
         self.start_time = reference_time + datetime.timedelta(seconds=frame_offset/self.fps)
         self.start_timestr = self.start_time.strftime("%H-%M-%S")
-        self.original_vidpath = outpath.joinpath("originals", f"original-{self.start_timestr}.{rv.suffix}")
-        self.trigger_vidpath = outpath.joinpath("triggers", f"trigger-{self.start_timestr}.{rv.suffix}")
-        self.original_firstframepath = self.original_vidpath.with_suffix(".jpg")
-        self.trigger_firstframepath = self.trigger_vidpath.with_suffix(".jpg")
+        self.original_vidpath = outpath.joinpath("originals", f"original-{self.start_timestr}{rv.suffix}")
+        self.trigger_vidpath = outpath.joinpath("triggers", f"trigger-{self.start_timestr}{rv.suffix}")
+        self.original_firstframepath = outpath.joinpath("originals", "first_frames", f"original-{self.start_timestr}.jpg")
+        self.trigger_firstframepath = outpath.joinpath("triggers", "first_frames", f"trigger-{self.start_timestr}.jpg")
 
         # open output subvideos
         self.original_cap = cv2.VideoWriter(
-            self.original_vidpath,
+            str(self.original_vidpath),
             cv2.VideoWriter_fourcc(*"MJPG"),
             self.fps,
             (self.width, self.height)
         )
         if not self.original_cap.isOpened(): raise RuntimeError("Couldn't create original video file")
         self.trigger_cap = cv2.VideoWriter(
-            self.trigger_vidpath,
+            str(self.trigger_vidpath),
             cv2.VideoWriter_fourcc(*"MJPG"),
             self.fps,
             (self.width, self.height)
@@ -151,18 +151,21 @@ class detected_birb_vid:
         # video metadata
         self.nframes = 0
         self.ninstances = {}
+        self.opened = True
 
     def write(self, original_frame, trigger_frame, instances):
 
         # save frame as image in case no frames have been written yet
         if not self.nframes:
-            cv2.imwrite(self.original_firstframepath, original_frame)
-            cv2.imwrite(self.trigger_firstframepath, trigger_frame)
+            cv2.imwrite(str(self.original_firstframepath), original_frame)
+            cv2.imwrite(str(self.trigger_firstframepath), trigger_frame)
         
         self.original_cap.write(original_frame)
         self.trigger_cap.write(trigger_frame)
         if cv2.waitKey(1) & 0xFF == ord('s'):
             pass
+
+        self.nframes += 1
 
         for k, v in instances.items():
             try:
@@ -170,15 +173,20 @@ class detected_birb_vid:
             except KeyError:
                 self.ninstances[k] = v
     
-    def close(self):
+    def release(self):
         # release caps
         self.original_cap.release()
         self.trigger_cap.release()
 
         # delete video if too short
         if self.nframes < self.minframes:
-            os.remove(self.original_vidpath)
-            os.remove(self.trigger_vidpath)
+            os.remove(str(self.original_vidpath))
+            os.remove(str(self.trigger_vidpath))
+
+        self.opened = False
+
+    def isOpened(self):
+        return self.opened
 
 def main(vidpath, model_detect_path, outdir, model_cls_path = None):
 
@@ -215,8 +223,7 @@ CLASSIFICATION MODEL: {model_cls_path}
 Beginning processing...
 """)
 
-    trigger_out_vid = None
-    original_out_vid = None
+    subvid = None
     success = cap.isOpened()
     nframe = 0
     WAITLIMIT=2*fps # wait two seconds before closing video
@@ -255,61 +262,27 @@ Beginning processing...
                 # subclassify
                 if bird_detected:
                     if model_cls: yolo_res = subclassify(yolo_res, model_cls)
-                    for k, v in count_detections(yolo_res).items():
+                    instance_count = count_detections(yolo_res)
+                    for k, v in instance_count.items():
                         print(f"{k}: {v}", end=" ")
                     print()
                     yolo_res.save_crop(instances_dir, add_seconds_to_timestring(vidname, nframe/fps))
                 else:
                     print("no bird detected")
-                # get annotated frame from yolo results
-                annotated_frame = yolo_res.plot(conf=False)
-                original_frame = yolo_res.orig_img
                 # create video if a video isn't currently open
-                if not trigger_out_vid or not trigger_out_vid.isOpened():
-                    trigger_subvid = create_new_fname(vidpath, nframe, fps, outdir, os.path.join("triggers", "trigger-"))
-                    trigger_out_vid = create_output_video(trigger_subvid, cap)
-                    cv2.imwrite(
-                        os.path.join(triggers_first_frames_dir, os.path.basename(trigger_subvid).split(".")[0] + ".jpg"), 
-                        annotated_frame
-                    )
-                if not original_out_vid or not original_out_vid.isOpened():
-                    original_subvid = create_new_fname(vidpath, nframe, fps, outdir, os.path.join("originals", "original-"))
-                    original_out_vid = create_output_video(original_subvid, cap)
-                    cv2.imwrite(
-                        os.path.join(originals_first_frames_dir, os.path.basename(original_subvid).split(".")[0] + ".jpg"), 
-                        original_frame
-                    )
-                # write the annotated frame
-                trigger_out_vid.write(annotated_frame)
-                original_out_vid.write(original_frame)
-                if cv2.waitKey(1) & 0xFF == ord('s'):
-                    break
+                if not subvid or not subvid.isOpened():
+                    subvid = detected_birb_vid(cap, vidpath, nframe, outdir, WAITLIMIT)
+                
+                subvid.write(yolo_res.orig_img, yolo_res.plot(conf=False), instance_count)
             else:
                 print("no bird detected")
                 # close the output video if it's open
-                if trigger_out_vid and trigger_out_vid.isOpened():
-                    # release video resources
-                    trigger_out_vid.release()
-                    # reopen video to check number of frames and get first frame
-                    trigger_out_vid = open_video(trigger_subvid)
-                    out_vid_nframes = trigger_out_vid.get(cv2.CAP_PROP_FRAME_COUNT)
-                    trigger_out_vid.release()
-                    # save first frame as jpg and delete video if video is too short
-                    if out_vid_nframes < 2*WAITLIMIT:
-                        os.remove(trigger_subvid)
-                # do the same but for the original video
-                if original_out_vid and original_out_vid.isOpened():
-                    original_out_vid.release()
-                    original_out_vid = open_video(original_subvid)
-                    out_vid_nframes = original_out_vid.get(cv2.CAP_PROP_FRAME_COUNT)
-                    original_out_vid.release()
-                    if out_vid_nframes < 2*WAITLIMIT:
-                        os.remove(original_subvid)
+                if subvid and subvid.isOpened():
+                    subvid.release()
             nframe += 1
     
     cap.release() 
-    if trigger_out_vid: trigger_out_vid.release() 
-    if original_out_vid: original_out_vid.release()
+    if subvid and subvid.isOpened(): subvid.release() 
         
     # Closes all the frames 
     cv2.destroyAllWindows() 
