@@ -3,3 +3,4 @@ runs
 **.pt
 **.nextflow*
 **.log
+**/__pycache__
