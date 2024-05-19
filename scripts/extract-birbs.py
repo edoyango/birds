@@ -8,6 +8,7 @@ import torch
 import copy
 import ultralytics
 import pathlib
+import csv
 
 def open_video(vname):
 
@@ -120,6 +121,7 @@ class detected_birb_vid:
 
         # create paths for output original/trigger subvideos/images
         rv = pathlib.Path(reference_vidname)
+        self.reference_vidpath = rv
         outpath = pathlib.Path(outdir)
         if not rv.is_file():
             raise RuntimeError("Input reference video path is not a file!")
@@ -131,6 +133,7 @@ class detected_birb_vid:
         self.trigger_vidpath = outpath.joinpath("triggers", f"trigger-{self.start_timestr}{rv.suffix}")
         self.original_firstframepath = outpath.joinpath("originals", "first_frames", f"original-{self.start_timestr}.jpg")
         self.trigger_firstframepath = outpath.joinpath("triggers", "first_frames", f"trigger-{self.start_timestr}.jpg")
+        self.meta_csvpath = outpath.joinpath("meta.csv")
 
         # open output subvideos
         self.original_cap = cv2.VideoWriter(
@@ -150,7 +153,7 @@ class detected_birb_vid:
 
         # video metadata
         self.nframes = 0
-        self.ninstances = {}
+        self.ninstances = 0
         self.opened = True
 
     def write(self, original_frame, trigger_frame, instances):
@@ -167,11 +170,8 @@ class detected_birb_vid:
 
         self.nframes += 1
 
-        for k, v in instances.items():
-            try:
-                self.ninstances[k] += v
-            except KeyError:
-                self.ninstances[k] = v
+        for v in instances.values():
+            self.ninstances += v
     
     def release(self):
         # release caps
@@ -184,6 +184,28 @@ class detected_birb_vid:
             os.remove(str(self.trigger_vidpath))
 
         self.opened = False
+
+        # write to metadatacsv
+        row = [
+            str(self.reference_vidpath),
+            self.start_timestr,
+            str(self.original_vidpath),
+            str(self.original_firstframepath),
+            str(self.trigger_vidpath),
+            str(self.trigger_firstframepath),
+            str(self.nframes),
+            str(self.ninstances)
+        ]
+        header = ["reference video path", "start time", "original video path", "original first frame path", "trigger video path", "trigger first frame path", "nframes", "ninstances"]
+        if self.meta_csvpath.exists() and self.meta_csvpath.is_file():
+            with self.meta_csvpath.open(mode="a") as f:
+                csvwriter = csv.writer(f)
+                csvwriter.writerow(row)
+        else:
+            with self.meta_csvpath.open(mode="w") as f:
+                csvwriter = csv.writer(f)
+                csvwriter.writerow(header)
+                csvwriter.writerow(row)
 
     def isOpened(self):
         return self.opened
