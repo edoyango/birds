@@ -132,7 +132,7 @@ workflow birbs_processing {
             model_cls: it[2]
         }
 
-    (ch_yolo_videos, ch_yolo_imgs, ch_yolo_instances) = YOLO(ch_videos, ch_model_detect, ch_model_cls)
+    (ch_yolo_videos, ch_yolo_imgs, ch_yolo_instances, ch_yolo_meta) = YOLO(ch_videos, ch_model_detect, ch_model_cls)
     ch_videos_encoded = FFMPEG_CRF(ch_yolo_videos.flatten())
     ch_yolo_instances.collect().count().view()
     (ch_triggers, ch_originals, ch_instances) = ORGANISE(
@@ -141,7 +141,7 @@ workflow birbs_processing {
         ch_yolo_instances.collect()
     )
 
-    ch_gif = MP42GIF(ch_triggers)
+    ch_gif = MP42GIF(ch_triggers, ch_yolo_meta.collect())
         | GIFSICLE
     
     RCLONE_UPLOAD_GIF(ch_date, ch_rclone_prefix, ch_gif)

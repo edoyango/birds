@@ -14,6 +14,7 @@ process YOLO {
     path("*-${video.baseName}/*.mkv"), optional: true // vidos
     path("*-${video.baseName}/first_frames/*.jpg"), optional: true // images
     path("instances-${video.baseName}", type: "dir") // instances images
+    path("meta.csv"), optional: true
 
     script:
     """

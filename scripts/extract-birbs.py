@@ -194,9 +194,9 @@ class detected_birb_vid:
             str(self.trigger_vidpath),
             str(self.trigger_firstframepath),
             str(self.nframes),
-            str(self.ninstances)
+            str(self.ninstances/self.nframes)
         ]
-        header = ["reference video path", "start time", "original video path", "original first frame path", "trigger video path", "trigger first frame path", "nframes", "ninstances"]
+        header = ["reference video path", "start time", "original video path", "original first frame path", "trigger video path", "trigger first frame path", "nframes", "average ninstance per frame"]
         if self.meta_csvpath.exists() and self.meta_csvpath.is_file():
             with self.meta_csvpath.open(mode="a") as f:
                 csvwriter = csv.writer(f)
@@ -290,6 +290,7 @@ Beginning processing...
                     print()
                     yolo_res.save_crop(instances_dir, add_seconds_to_timestring(vidname, nframe/fps))
                 else:
+                    instance_count = {}
                     print("no bird detected")
                 # create video if a video isn't currently open
                 if not subvid or not subvid.isOpened():

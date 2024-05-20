@@ -24,26 +24,21 @@ process MP42GIF {
 
     input:
     path("triggers")
+    path("meta*.csv")
 
     output:
     path("*.gif")
 
     shell:
     '''
-    file2gif="$(\\
-        find -L triggers \\
-            -type f \\
-            -name '*.mp4' \\
-            -size -3000000c \\
-            -printf '%s %p\\n' | \\
-        sort -nr | \\
-        head -n 1 | \\
-        cut -d " " -f 2\\
-    )"
+    # get file with highest average instances
+    file2gif=$(tail -n +2 -q meta*.csv  | sort -n -t , -k 7 -r | head -n 1 | cut -d , -f 5)
+    file2gif=${file2gif%.*}.mp4
+
     fname="$(basename ${file2gif})"
     fname="${fname%.*}"
-    ffmpeg -y -i "$file2gif" \\
-        -vf "scale=640:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse" \\
+    ffmpeg -y -t 40 -i "$file2gif" \\
+        -vf "scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse" \\
         "$fname.gif"
     '''
 }
