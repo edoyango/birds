@@ -24,7 +24,7 @@ process MP42GIF {
 
     input:
     path("triggers")
-    path("meta*.csv")
+    path("meta.csv")
 
     output:
     path("*.gif")
@@ -32,7 +32,7 @@ process MP42GIF {
     shell:
     '''
     # get file with highest average instances
-    file2gif=$(tail -n +2 -q meta*.csv  | sort -n -t , -k 7 -r | head -n 1 | cut -d , -f 5)
+    file2gif=$(tail -n +2 -q meta.csv  | sort -n -t , -k 7 -r | head -n 1 | cut -d , -f 5)
     file2gif=${file2gif%.*}.mp4
 
     fname="$(basename ${file2gif})"

@@ -7,6 +7,7 @@ include {RCLONE_COPY_UP as RCLONE_UPLOAD_TRIGGERS} from "./modules/rclone.nf"
 include {RCLONE_COPY_UP as RCLONE_UPLOAD_ORIGINALS} from "./modules/rclone.nf"
 include {RCLONE_COPY_UP as RCLONE_UPLOAD_INSTANCES} from "./modules/rclone.nf"
 include {RCLONE_COPY_UP as RCLONE_UPLOAD_GIF} from "./modules/rclone.nf"
+include {RCLONE_COPY_UP as RCLONE_UPLOAD_META} from "./modules/rclone.nf"
 
 process ORGANISE {
 
@@ -18,14 +19,18 @@ process ORGANISE {
     path(encoded_videos)
     path(original_trigger_images)
     path(instances)
+    path("meta*.csv")
 
     output:
     path("triggers", type: "dir")
     path("originals", type: "dir")
     path("instances-*.tar", type: "file")
+    path("all_meta.csv", type: "file")
 
     shell:
     '''
+    head -n 1 meta1.csv > all_meta.csv
+    tail -n +2 -q meta*.csv >> all_meta.csv
     mkdir triggers originals instances
     cd triggers
     cp -s ../trigger-*.mp4 . &
@@ -135,19 +140,21 @@ workflow birbs_processing {
     (ch_yolo_videos, ch_yolo_imgs, ch_yolo_instances, ch_yolo_meta) = YOLO(ch_videos, ch_model_detect, ch_model_cls)
     ch_videos_encoded = FFMPEG_CRF(ch_yolo_videos.flatten())
     ch_yolo_instances.collect().count().view()
-    (ch_triggers, ch_originals, ch_instances) = ORGANISE(
+    (ch_triggers, ch_originals, ch_instances, ch_allmeta) = ORGANISE(
         ch_videos_encoded.collect(), 
         ch_yolo_imgs.flatten().collect(), 
-        ch_yolo_instances.collect()
+        ch_yolo_instances.collect(),
+        ch_yolo_meta.collect()
     )
 
-    ch_gif = MP42GIF(ch_triggers, ch_yolo_meta.collect())
+    ch_gif = MP42GIF(ch_triggers, ch_allmeta)
         | GIFSICLE
     
     RCLONE_UPLOAD_GIF(ch_date, ch_rclone_prefix, ch_gif)
     RCLONE_UPLOAD_TRIGGERS(ch_date, ch_rclone_prefix, ch_triggers)
     RCLONE_UPLOAD_ORIGINALS(ch_date, ch_rclone_prefix, ch_originals)
     RCLONE_UPLOAD_INSTANCES(ch_date, ch_rclone_prefix, ch_instances)
+    RCLONE_UPLOAD_META(ch_date, ch_rclone_prefix, ch_allmeta)
 
     ch_email_list = channel.fromPath(params.email_list, checkIfExists: true)
     EMAIL(ch_date, ch_gif, ch_instances, ch_email_list, ch_rclone_prefix)
