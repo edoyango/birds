@@ -4,6 +4,7 @@ process YOLO {
     memory "8 GB"
     container "ultralytics/ultralytics:8.2.2"
     conda "${moduleDir}/yolo-environment.yml"
+    errorStrategy "ignore"
 
     input:
     path(video)
