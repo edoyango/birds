@@ -4,3 +4,7 @@ runs
 **.nextflow*
 **.log
 **/__pycache__
+**.ipynb_checkpoints
+**.cache
+**.onnx
+**.engine
