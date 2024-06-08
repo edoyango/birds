@@ -251,7 +251,7 @@ Beginning processing...
     WAITLIMIT=2*fps # wait two seconds before closing video
     wait_counter = WAITLIMIT
     batch_size = WAITLIMIT
-    while success:
+    while success and nframe < total_frames:
 
         # read frames into batch
         frames = []
