@@ -31,14 +31,16 @@ process MP42GIF {
 
     shell:
     '''
-    # get file with highest average instances
-    file2gif=$(tail -n +2 -q meta.csv  | sort -n -t , -k 7 -r | head -n 1 | cut -d , -f 5)
-    file2gif=${file2gif%.*}.mp4
+    # get 5 files with highest average instances
+    for file2gif in $(tail -n +2 -q meta.csv  | sort -n -t , -k 7 -r | head -n 5 | cut -d , -f 5)
+    do
+        file2gif=${file2gif%.*}.mp4
 
-    fname="$(basename ${file2gif})"
-    fname="${fname%.*}"
-    ffmpeg -y -t 40 -i "$file2gif" \\
-        -vf "scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse" \\
-        "$fname.gif"
+        fname="$(basename ${file2gif})"
+        fname="${fname%.*}"
+        ffmpeg -y -t 15 -i "$file2gif" \\
+            -vf "scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse" \\
+            "$fname.gif"
+    done
     '''
 }

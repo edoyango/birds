@@ -46,6 +46,23 @@ process ORGANISE {
     '''
 }
 
+process STACK_GIFS {
+    cpus 1
+    memory "1 GB"
+    container "oras://ghcr.io/edoyango/python3-pillow:3.10.6_9.0.1"
+
+    input:
+    path(gifs)
+
+    output:
+    path("stacked.gif")
+
+    script:
+    """
+    stack-gifs.py stacked.gif *.gif
+    """   
+}
+
 process GIFSICLE {
 
     cpus 1
@@ -148,6 +165,7 @@ workflow birbs_processing {
     )
 
     ch_gif = MP42GIF(ch_triggers, ch_allmeta)
+        | STACK_GIFS
         | GIFSICLE
     
     RCLONE_UPLOAD_GIF(ch_date, ch_rclone_prefix, ch_gif)

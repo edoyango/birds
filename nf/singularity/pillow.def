@@ -1,0 +1,9 @@
+bootstrap: docker
+from: ubuntu:22.04
+
+%post
+
+  apt-get update
+  apt-get install -y python-is-python3 python3 python3-pillow
+  apt-get clean
+  rm -rf /var/lib/apt/lists/*
