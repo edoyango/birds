@@ -38,7 +38,10 @@ process MP42GIF {
 
         fname="$(basename ${file2gif})"
         fname="${fname%.*}"
-        ffmpeg -y -t 15 -i "$file2gif" \\
+        duration=$(ffmpeg -i "$file2gif" 2>&1 | grep "Duration"| cut -d ' ' -f 4 | sed s/,// | sed 's@\\..*@@g' | awk '{ split($1, A, ":"); split(A[3], B, "."); print 3600*A[1] + 60*A[2] + B[1] }')
+        let "starttime = $duration/2 - 8"
+        [ "$starttime" -lt 0 ] && starttime=0
+        ffmpeg -y -ss "$starttime" -t 15 -i "$file2gif" \\
             -vf "scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse" \\
             "$fname.gif"
     done
