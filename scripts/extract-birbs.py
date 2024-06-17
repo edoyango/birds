@@ -62,6 +62,7 @@ def create_new_fname(vidpath, frame_idx, fps, outdir=None, prefix=""):
         outpath = os.path.join(vid_dir, outfile)
     return outpath
 
+@torch.no_grad()
 def subclassify(detection_result, cls_model):
 
     ret = copy.deepcopy(detection_result)
@@ -85,11 +86,8 @@ def subclassify(detection_result, cls_model):
         nexisting_names = len(ret.names)
         tmp_box_data[:, -1] = torch.Tensor([i.probs.top1 + nexisting_names for i in res])
         ret.boxes.data = tmp_box_data
-        species_names = res[0].names
-        new_names = ret.names
-        for k, v in species_names.items():
-            new_names[k  + nexisting_names] = v
-        ret.names = new_names
+        for k, v in res[0].names.items():
+            ret.names[k  + nexisting_names] = v
 
     return ret
 
