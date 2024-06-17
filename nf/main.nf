@@ -9,6 +9,8 @@ include {RCLONE_COPY_UP as RCLONE_UPLOAD_INSTANCES} from "./modules/rclone.nf"
 include {RCLONE_COPY_UP as RCLONE_UPLOAD_GIF} from "./modules/rclone.nf"
 include {RCLONE_COPY_UP as RCLONE_UPLOAD_META} from "./modules/rclone.nf"
 
+params.save_instances = false
+
 process ORGANISE {
 
     cpus 8
@@ -24,7 +26,7 @@ process ORGANISE {
     output:
     path("triggers", type: "dir")
     path("originals", type: "dir")
-    path("instances-*.tar", type: "file")
+    path "instances-*.tar", type: "file", optional: true
     path("all_meta.csv", type: "file")
 
     shell:
@@ -34,10 +36,10 @@ process ORGANISE {
     mkdir triggers originals instances
     cd triggers
     cp -s ../trigger-*.mp4 . &
-    tar --dereference -cf jpgs.tar ../trigger-*.jpg &
+    tar --dereference -cf jpgs.tar ../trigger-*.jpg | true & # don't fail if no instances
     cd ../originals
     cp -s ../original-*.mp4 . &
-    tar --dereference -cf jpgs.tar ../original-*.jpg &
+    tar --dereference -cf jpgs.tar ../original-*.jpg | true & # don't fail if no instances
     cd ..
     find -L -name 'instances-*' -maxdepth 1 -type d -exec tar --dereference -cf {}.tar {} \\; &
     ffmpeg -y -framerate 1/2 -pattern_type glob -i 'trigger-*.jpg' -c:v libx265 -x265-params pools=!{task.cpus} -crf 28 triggers/jpgs.mp4
@@ -132,7 +134,6 @@ process EMAIL {
 }
 
 workflow birbs_processing {
-
     ch_date = channel.of(params.date)
     ch_rclone_prefix = channel.of(params.rclone_prefix)
 

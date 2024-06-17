@@ -208,7 +208,7 @@ class detected_birb_vid:
     def isOpened(self):
         return self.opened
 
-def main(vidpath, model_detect_path, outdir, model_cls_path = None):
+def main(vidpath, model_detect_path, outdir, model_cls_path = None, save_instances = True):
 
     vidname = ".".join(os.path.basename(vidpath).split(".")[:-1])
 
@@ -286,7 +286,7 @@ Beginning processing...
                     for k, v in instance_count.items():
                         print(f"{k}: {v}", end=" ")
                     print()
-                    yolo_res.save_crop(instances_dir, add_seconds_to_timestring(vidname, nframe/fps))
+                    if save_instances: yolo_res.save_crop(instances_dir, add_seconds_to_timestring(vidname, nframe/fps))
                 else:
                     instance_count = {}
                     print("no bird detected")
@@ -317,5 +317,6 @@ if __name__ == "__main__":
     parser.add_argument("--model", "-m", default="yolov8n.pt")
     parser.add_argument("--output-directory", "-o", default=".")
     parser.add_argument("--cls-model", "-c", default=None)
+    parser.add_argument("--save-instances", "-s", action="store_true")
     args = parser.parse_args()
-    main(args.video, args.model, args.output_directory, args.cls_model)
+    main(args.video, args.model, args.output_directory, args.cls_model, args.save_instances)
