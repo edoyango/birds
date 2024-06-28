@@ -9,6 +9,7 @@ import copy
 import ultralytics
 import pathlib
 import csv
+from collections import Counter
 
 def open_video(vname):
 
@@ -21,7 +22,7 @@ def open_video(vname):
 
 def get_model(model_path):
 
-    model = ultralytics.YOLO(model_path)
+    model = ultralytics.YOLO(model_path, task="detect")
 
     for k, v in model.names.items():
         if v == "bird":
@@ -105,7 +106,7 @@ def count_detections(detection_result):
 
 class detected_birb_vid:
 
-    def __init__(self, reference_cap, reference_vidname, frame_offset, outdir, minframes):
+    def __init__(self, reference_cap, reference_vidname, frame_offset, outdir, minframes, instances_names):
 
         # check that reference_cap is open
         if not reference_cap.isOpened():
@@ -152,6 +153,7 @@ class detected_birb_vid:
         # video metadata
         self.nframes = 0
         self.ninstances = 0
+        self.ninstances_each = {n: 0 for n in instances_names}
         self.opened = True
 
     def write(self, original_frame, trigger_frame, instances):
@@ -168,7 +170,8 @@ class detected_birb_vid:
 
         self.nframes += 1
 
-        for v in instances.values():
+        for k, v in instances.items():
+            self.ninstances_each[k] += v
             self.ninstances += v
     
     def release(self):
@@ -195,6 +198,9 @@ class detected_birb_vid:
             str(self.ninstances/self.nframes)
         ]
         header = ["reference video path", "start time", "original video path", "original first frame path", "trigger video path", "trigger first frame path", "nframes", "average ninstance per frame"]
+        for k, v in self.ninstances_each.items():
+            header.append(k)
+            row.append(str(v))
         if self.meta_csvpath.exists() and self.meta_csvpath.is_file():
             with self.meta_csvpath.open(mode="a") as f:
                 csvwriter = csv.writer(f)
@@ -292,7 +298,7 @@ Beginning processing...
                     print("no bird detected")
                 # create video if a video isn't currently open
                 if not subvid or not subvid.isOpened():
-                    subvid = detected_birb_vid(cap, vidpath, nframe, outdir, WAITLIMIT)
+                    subvid = detected_birb_vid(cap, vidpath, nframe, outdir, WAITLIMIT, list(model.names.values()) + list(model_cls.names.values()))
                 
                 subvid.write(yolo_res.orig_img, yolo_res.plot(conf=False), instance_count)
             else:
