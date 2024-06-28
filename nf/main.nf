@@ -93,7 +93,7 @@ process EMAIL {
     input:
     each date
     path(gif)
-    path(instances)
+    path(meta)
     path(email_list)
     each rclone_prefix
 
@@ -101,13 +101,9 @@ process EMAIL {
     '''
     # create a google drive link
     gdrive_link=$(rclone link "!{rclone_prefix}/!{date}/triggers")
-    find -L -maxdepth 1 -name 'instances-*.tar' -exec tar -tf {} \\; > instances_tar_contents.txt
-    nbirbs=$(grep .jpg instances_tar_contents.txt | wc -l)
-    birblist=$(\\
-    for species in $(grep -v .jpg instances_tar_contents.txt | awk -F/ '{ if (NF>3) print $3 }' | sort | uniq); \\
-    do \\
-        echo "<li>${species}: $(awk -F/ -v species=${species} '$3==species{ print $4 }' instances_tar_contents.txt | wc -l)</li>"; \\
-    done)
+
+    # count how many of each instance
+    birblist="$(parse-instances.py !{meta})"
 
     send_birb_summary.py \\
         -s "Birb watcher update" \\
@@ -118,7 +114,7 @@ process EMAIL {
         "<html>
         <body>
             <p>Hi {FIRST},</p>
-            <p>I've been recording videos all day, and (I think) I saw ${nbirbs} birds across all individual frames today! I thought these were:</p>
+            <p>I've been recording videos all day, and across all video frames I saw:</p>
             <ul>
             $birblist
             </ul>
@@ -176,7 +172,7 @@ workflow birbs_processing {
     RCLONE_UPLOAD_META(ch_date, ch_rclone_prefix, ch_allmeta)
 
     ch_email_list = channel.fromPath(params.email_list, checkIfExists: true)
-    EMAIL(ch_date, ch_gif, ch_instances, ch_email_list, ch_rclone_prefix)
+    EMAIL(ch_date, ch_gif, ch_allmeta, ch_email_list, ch_rclone_prefix)
         
 }
 
