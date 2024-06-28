@@ -2,7 +2,7 @@ process YOLO {
 
     cpus 8
     memory "8 GB"
-    container "ultralytics/ultralytics:8.2.2"
+    container "ultralytics/ultralytics:8.2.42"
     conda "${moduleDir}/yolo-environment.yml"
     errorStrategy "ignore"
 
