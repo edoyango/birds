@@ -33,7 +33,7 @@ def create_output_video(vname, cap):
 
     out = cv2.VideoWriter(
         vname,
-        cv2.VideoWriter_fourcc(*"MJPG"),
+        cv2.VideoWriter_fourcc(*"mp4v"),
         float(cap.get(cv2.CAP_PROP_FPS)),
         (
             int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
@@ -124,27 +124,28 @@ class detected_birb_vid:
         outpath = pathlib.Path(outdir)
         if not rv.is_file():
             raise RuntimeError("Input reference video path is not a file!")
-        reference_timestr = rv.stem
+        reference_timestr = rv.stem[-8:]
+        prefix = rv.stem[:-8]
         reference_time = datetime.datetime.strptime(reference_timestr, "%H-%M-%S")
         self.start_time = reference_time + datetime.timedelta(seconds=frame_offset/self.fps)
         self.start_timestr = self.start_time.strftime("%H-%M-%S")
-        self.original_vidpath = outpath.joinpath("originals", f"original-{self.start_timestr}{rv.suffix}")
-        self.trigger_vidpath = outpath.joinpath("triggers", f"trigger-{self.start_timestr}{rv.suffix}")
-        self.original_firstframepath = outpath.joinpath("originals", "first_frames", f"original-{self.start_timestr}.jpg")
-        self.trigger_firstframepath = outpath.joinpath("triggers", "first_frames", f"trigger-{self.start_timestr}.jpg")
+        self.original_vidpath = outpath.joinpath("originals", f"original-{prefix}{self.start_timestr}{rv.suffix}")
+        self.trigger_vidpath = outpath.joinpath("triggers", f"trigger-{prefix}{self.start_timestr}{rv.suffix}")
+        self.original_firstframepath = outpath.joinpath("originals", "first_frames", f"original-{prefix}{self.start_timestr}.jpg")
+        self.trigger_firstframepath = outpath.joinpath("triggers", "first_frames", f"trigger-{prefix}{self.start_timestr}.jpg")
         self.meta_csvpath = outpath.joinpath("meta.csv")
 
         # open output subvideos
         self.original_cap = cv2.VideoWriter(
             str(self.original_vidpath),
-            cv2.VideoWriter_fourcc(*"MJPG"),
+            cv2.VideoWriter_fourcc(*"mp4v"),
             self.fps,
             (self.width, self.height)
         )
         if not self.original_cap.isOpened(): raise RuntimeError("Couldn't create original video file")
         self.trigger_cap = cv2.VideoWriter(
             str(self.trigger_vidpath),
-            cv2.VideoWriter_fourcc(*"MJPG"),
+            cv2.VideoWriter_fourcc(*"mp4v"),
             self.fps,
             (self.width, self.height)
         )
@@ -268,7 +269,6 @@ Beginning processing...
             batch_res = model(
                 source=frames,
                 classes=[bird_class_idx],
-                augment=True,
                 conf=0.46,
                 iou=0.5,
                 imgsz=864,
