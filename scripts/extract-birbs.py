@@ -34,7 +34,7 @@ def create_output_video(vname, cap):
 
     out = cv2.VideoWriter(
         vname,
-        cv2.VideoWriter_fourcc(*"MJPG"),
+        cv2.VideoWriter_fourcc(*"mp4v"),
         float(cap.get(cv2.CAP_PROP_FPS)),
         (
             int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
@@ -139,14 +139,14 @@ class detected_birb_vid:
         # open output subvideos
         self.original_cap = cv2.VideoWriter(
             str(self.original_vidpath),
-            cv2.VideoWriter_fourcc(*"MJPG"),
+            cv2.VideoWriter_fourcc(*"mp4v"),
             self.fps,
             (self.width, self.height)
         )
         if not self.original_cap.isOpened(): raise RuntimeError("Couldn't create original video file")
         self.trigger_cap = cv2.VideoWriter(
             str(self.trigger_vidpath),
-            cv2.VideoWriter_fourcc(*"MJPG"),
+            cv2.VideoWriter_fourcc(*"mp4v"),
             self.fps,
             (self.width, self.height)
         )
@@ -273,7 +273,6 @@ Beginning processing...
             batch_res = model(
                 source=frames,
                 classes=[bird_class_idx],
-                augment=True,
                 conf=0.46,
                 iou=0.5,
                 imgsz=imgsz,
