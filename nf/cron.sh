@@ -8,6 +8,7 @@
 #SBATCH --output /vast/scratch/users/yang.e/tmp/%x-%j.o
 #SBATCH --error /vast/scratch/users/yang.e/tmp/%x-%j.e
 #SBATCH --chdir /vast/scratch/users/yang.e/birds/nf
+#SBATCH --time 360
 
 set -eu
 
