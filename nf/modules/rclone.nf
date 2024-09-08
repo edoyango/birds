@@ -30,7 +30,7 @@ process RCLONE_COPY_DOWN {
     val remote_fpath
 
     output:
-    path("??-??-??.mkv"), emit: mkv
+    path("*??-??-??.mkv"), emit: mkv
 
     script:
     """
