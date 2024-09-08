@@ -276,7 +276,8 @@ Beginning processing...
                 conf=0.46,
                 iou=0.5,
                 imgsz=imgsz,
-                verbose=False
+                verbose=False,
+                half=True
             )
         else:
             batch_res = []
