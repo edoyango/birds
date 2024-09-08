@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import cv2
+import numpy as  np
 import os
 import datetime
 import sys
@@ -124,14 +125,15 @@ class detected_birb_vid:
         outpath = pathlib.Path(outdir)
         if not rv.is_file():
             raise RuntimeError("Input reference video path is not a file!")
-        reference_timestr = rv.stem
+        reference_timestr = rv.stem[-8:]
+        self.prefix = rv.stem[:-8]
         reference_time = datetime.datetime.strptime(reference_timestr, "%H-%M-%S")
         self.start_time = reference_time + datetime.timedelta(seconds=frame_offset/self.fps)
         self.start_timestr = self.start_time.strftime("%H-%M-%S")
-        self.original_vidpath = outpath.joinpath("originals", f"original-{self.start_timestr}{rv.suffix}")
-        self.trigger_vidpath = outpath.joinpath("triggers", f"trigger-{self.start_timestr}{rv.suffix}")
-        self.original_firstframepath = outpath.joinpath("originals", "first_frames", f"original-{self.start_timestr}.jpg")
-        self.trigger_firstframepath = outpath.joinpath("triggers", "first_frames", f"trigger-{self.start_timestr}.jpg")
+        self.original_vidpath = outpath.joinpath("originals", f"original-{self.prefix}{self.start_timestr}{rv.suffix}")
+        self.trigger_vidpath = outpath.joinpath("triggers", f"trigger-{self.prefix}{self.start_timestr}{rv.suffix}")
+        self.original_firstframepath = outpath.joinpath("originals", "first_frames", f"original-{self.prefix}{self.start_timestr}.jpg")
+        self.trigger_firstframepath = outpath.joinpath("triggers", "first_frames", f"trigger-{self.prefix}{self.start_timestr}.jpg")
         self.meta_csvpath = outpath.joinpath("meta.csv")
 
         # open output subvideos
@@ -214,7 +216,7 @@ class detected_birb_vid:
     def isOpened(self):
         return self.opened
 
-def main(vidpath, model_detect_path, outdir, model_cls_path = None, save_instances = True):
+def main(vidpath, model_detect_path, outdir, model_cls_path = None, save_instances = True, imgsz=864):
 
     vidname = ".".join(os.path.basename(vidpath).split(".")[:-1])
 
@@ -259,9 +261,12 @@ Beginning processing...
 
         # read frames into batch
         frames = []
-        while success and len(frames) < batch_size:
+        while len(frames) < batch_size:
             success, frame = cap.read()
-            if success: frames.append(frame)
+            if success: 
+                frames.append(frame)
+            else:
+                frames.append(np.zeros_like(frames[0])) # loop logic ensures first frame is always present
 
         # inference on frames batch
         if frames: 
@@ -271,7 +276,7 @@ Beginning processing...
                 augment=True,
                 conf=0.46,
                 iou=0.5,
-                imgsz=864,
+                imgsz=imgsz,
                 verbose=False
             )
         else:
@@ -324,5 +329,6 @@ if __name__ == "__main__":
     parser.add_argument("--output-directory", "-o", default=".")
     parser.add_argument("--cls-model", "-c", default=None)
     parser.add_argument("--save-instances", "-s", action="store_true")
+    parser.add_argument("--imgsz", "-i", default=864)
     args = parser.parse_args()
     main(args.video, args.model, args.output_directory, args.cls_model, args.save_instances)
