@@ -14,7 +14,7 @@ starttime=$(date +"%H-%M-%S")
 output_vid=${prefix}$(basename $dev)-$starttime.mkv
 today=$(date +"%Y-%m-%d")
 
-ffmpeg -y -t $duration -f v4l2 -input_format yuyv422 -video_size 1280x720 -i $dev -vf scale=864:486 -c:v h264_v4l2m2m -b:v 2000K $output_vid
+ffmpeg -y -t $duration -f v4l2 -input_format yuyv422 -video_size 1280x720 -i $dev -vf scale=864:486 -r 10 -c:v h264_v4l2m2m -b:v 2000K $output_vid
 
 #birds_dir=/home/edwardy/birds
 #mkdir -p $birds_dir/output
