@@ -20,6 +20,6 @@ export APPTAINER_TMPDIR=/vast/scratch/users/yang.e/.stmp
 export APPTAINER_CACHEDIR=/vast/scratch/users/yang.e/.scache
 export SINGULARITY_TMPDIR=$APPTAINER_TMPDIR SINGULARITY_CACHEDIR=$APPTAINER_CACHEDIR
 
- GMAIL_APP_PWD=bpcshpyjugjpmbvy nextflow run main.nf --date $date -profile wehi --model_detect ../models/yolov10-birbs.engine --model_cls ../models/yolov8-cls-birbs.pt --outdir test-output --email_list ../email-lists.csv -process.errorStrategy retry -resume
+ GMAIL_APP_PWD=bpcshpyjugjpmbvy nextflow run main.nf --date $date -profile wehi --model_detect ../models/yolov10-birbs.engine --model_cls ../models/yolov8-cls-birbs.pt --outdir test-output --email_list ../email-lists.csv -process.errorStrategy retry -resume --nsamples 4
 
 nextflow clean -f

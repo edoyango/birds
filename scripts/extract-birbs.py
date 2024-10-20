@@ -21,14 +21,14 @@ def open_video(vname):
 
     return cap
 
-def get_model(model_path):
-
-    model = ultralytics.YOLO(model_path, task="detect")
-
-    for k, v in model.names.items():
-        if v == "bird":
-            bird_class = k
-    return model, bird_class
+#def get_model(model_path):
+#
+#    model = ultralytics.YOLO(model_path, task="detect")
+#
+#    for k, v in model.names.items():
+#        if v == "bird":
+#            bird_class = k
+#    return model, bird_class
 
 def create_output_video(vname, cap):
 
@@ -237,9 +237,11 @@ def main(vidpath, model_detect_path, outdir, model_cls_path = None, save_instanc
     fps=10.0 # temporary fix
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    model, bird_class_idx = get_model(model_detect_path)
+    #model, bird_class_idx = get_model(model_detect_path)
+    model = ultralytics.YOLO(model_detect_path, task="detect")
 
-    model_cls = ultralytics.YOLO(model_cls_path) if model_cls_path else None
+    #model_cls = ultralytics.YOLO(model_cls_path) if model_cls_path else None
+    model_cls = None
 
     print(f"""INPUT VIDEO: {vidpath}
     Resolution: {cap.get(cv2.CAP_PROP_FRAME_HEIGHT)}x{int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}
@@ -272,7 +274,7 @@ Beginning processing...
         if frames: 
             batch_res = model(
                 source=frames,
-                classes=[bird_class_idx],
+                #classes=[bird_class_idx],
                 conf=0.46,
                 iou=0.5,
                 imgsz=imgsz,
@@ -285,14 +287,15 @@ Beginning processing...
         for yolo_res in batch_res:
             print(f"frame {nframe+1}/{total_frames}", end=" ")
             # save bool indicating whether a bird was detected
-            bird_detected = bird_class_idx in yolo_res.boxes.cls
+            #bird_detected = bird_class_idx in yolo_res.boxes.cls
+            bird_detected = len(yolo_res.boxes.cls) > 0
             # update wait_counter if bird not detected
             wait_counter = 0 if bird_detected else wait_counter + 1
             # keep writing to video if wait limit hasn't been reached
             if wait_counter < WAITLIMIT:
                 # subclassify
                 if bird_detected:
-                    if model_cls: yolo_res = subclassify(yolo_res, model_cls)
+                    #if model_cls: yolo_res = subclassify(yolo_res, model_cls)
                     instance_count = count_detections(yolo_res)
                     for k, v in instance_count.items():
                         print(f"{k}: {v}", end=" ")
@@ -303,7 +306,8 @@ Beginning processing...
                     print("no bird detected")
                 # create video if a video isn't currently open
                 if not subvid or not subvid.isOpened():
-                    subvid = detected_birb_vid(cap, vidpath, nframe, outdir, WAITLIMIT, list(model.names.values()) + list(model_cls.names.values()))
+                    #subvid = detected_birb_vid(cap, vidpath, nframe, outdir, WAITLIMIT, list(model.names.values()) + list(model_cls.names.values()))
+                    subvid = detected_birb_vid(cap, vidpath, nframe, outdir, WAITLIMIT, list(model.names.values()))
                 
                 subvid.write(yolo_res.orig_img, yolo_res.plot(conf=False), instance_count)
             else:

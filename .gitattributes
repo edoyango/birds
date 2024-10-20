@@ -1,3 +1,2 @@
-models/yolov8-cls-birbs.pt filter=lfs diff=lfs merge=lfs -text
 models/yolov9-birbs.pt filter=lfs diff=lfs merge=lfs -text
-models/yolov10-birbs.pt filter=lfs diff=lfs merge=lfs -text
+models/yolov11-birbs.pt filter=lfs diff=lfs merge=lfs -text
