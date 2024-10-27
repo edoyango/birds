@@ -267,7 +267,7 @@ Beginning processing...
             success, frame = cap.read()
             if success: 
                 frames.append(frame)
-            else:
+            elif len(frames) > 0:
                 frames.append(np.zeros_like(frames[0])) # loop logic ensures first frame is always present
 
         # inference on frames batch
