@@ -11,6 +11,7 @@ import ultralytics
 import pathlib
 import csv
 from collections import Counter
+import multiprocessing as mp
 
 def open_video(vname):
 
@@ -37,6 +38,21 @@ def count_detections(detection_result):
             counts[ii] = 1
     
     return {detection_result.names[k]: v for k, v in counts.items()}
+
+def video_writer_worker(queue, path, fps, w, h):
+    cap = cv2.VideoWriter(
+        path,
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (w, h)
+    )
+    if not cap.isOpened(): raise RuntimeError(f"Couldn't create video file {path}")
+    while True:
+        frame = queue.get()
+        if frame is None:
+            break
+        cap.write(frame)
+    cap.release()
 
 class detected_birb_vid:
 
@@ -69,21 +85,22 @@ class detected_birb_vid:
         self.trigger_firstframepath = outpath.joinpath("triggers", "first_frames", f"trigger-{self.prefix}{self.start_timestr}.jpg")
         self.meta_csvpath = outpath.joinpath("meta.csv")
 
-        # open output subvideos
-        self.original_cap = cv2.VideoWriter(
-            str(self.original_vidpath),
-            cv2.VideoWriter_fourcc(*"mp4v"),
-            self.fps,
-            (self.width, self.height)
+        ## initiate videowriter workers for original and trigger videos
+        # create quese to store frames
+        self.original_frame_queue = mp.Queue()
+        self.trigger_frame_queue = mp.Queue()
+        # create worker multiprocesses
+        self.original_worker = mp.Process(
+            target=video_writer_worker,
+            args=(self.original_frame_queue, self.original_vidpath, self.fps, self.width, self.height)
         )
-        if not self.original_cap.isOpened(): raise RuntimeError("Couldn't create original video file")
-        self.trigger_cap = cv2.VideoWriter(
-            str(self.trigger_vidpath),
-            cv2.VideoWriter_fourcc(*"mp4v"),
-            self.fps,
-            (self.width, self.height)
+        self.trigger_worker = mp.Process(
+            target=video_writer_worker,
+            args=(self.trigger_frame_queue, self.trigger_vidpath, self.fps, self.width, self.height)
         )
-        if not self.original_cap.isOpened(): raise RuntimeError("Couldn't create trigger video file")
+        # start subprocesses
+        self.original_worker.start()
+        self.trigger_worker.start()
 
         # video metadata
         self.nframes = 0
@@ -98,8 +115,8 @@ class detected_birb_vid:
             cv2.imwrite(str(self.original_firstframepath), original_frame)
             cv2.imwrite(str(self.trigger_firstframepath), trigger_frame)
         
-        self.original_cap.write(original_frame)
-        self.trigger_cap.write(trigger_frame)
+        self.original_frame_queue.put(original_frame)
+        self.trigger_frame_queue.put(trigger_frame)
 
         self.nframes += 1
 
@@ -108,9 +125,9 @@ class detected_birb_vid:
             self.ninstances += v
     
     def release(self):
-        # release caps
-        self.original_cap.release()
-        self.trigger_cap.release()
+        # Send None to subprocesses to break them
+        self.original_frame_queue.put(None)
+        self.trigger_frame_queue.put(None)
 
         # delete video if too short
         if self.nframes < self.minframes:
@@ -147,7 +164,7 @@ class detected_birb_vid:
     def isOpened(self):
         return self.opened
 
-def main(vidpath, model_detect_path, outdir, model_cls_path = None, save_instances = True, imgsz=864):
+def main(vidpath, model_detect_path, outdir, save_instances = True, imgsz=864):
 
     vidname = ".".join(os.path.basename(vidpath).split(".")[:-1])
 
@@ -254,8 +271,7 @@ if __name__ == "__main__":
     parser.add_argument("--video", "-v")
     parser.add_argument("--model", "-m", default="yolov8n.pt")
     parser.add_argument("--output-directory", "-o", default=".")
-    parser.add_argument("--cls-model", "-c", default=None)
     parser.add_argument("--save-instances", "-s", action="store_true")
     parser.add_argument("--imgsz", "-i", default=864)
     args = parser.parse_args()
-    main(args.video, args.model, args.output_directory, args.cls_model, args.save_instances, args.imgsz)
+    main(args.video, args.model, args.output_directory, args.save_instances, args.imgsz)
