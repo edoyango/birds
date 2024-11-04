@@ -21,77 +21,10 @@ def open_video(vname):
 
     return cap
 
-#def get_model(model_path):
-#
-#    model = ultralytics.YOLO(model_path, task="detect")
-#
-#    for k, v in model.names.items():
-#        if v == "bird":
-#            bird_class = k
-#    return model, bird_class
-
-def create_output_video(vname, cap):
-
-    out = cv2.VideoWriter(
-        vname,
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        float(cap.get(cv2.CAP_PROP_FPS)),
-        (
-            int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
-            int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        )
-    )
-
-    if not out.isOpened():
-        raise RuntimeError(f"Failed to open {vname}")
-    else:
-        return out
-
 def add_seconds_to_timestring(timestring: str, seconds: int):
     time_obj = datetime.datetime.strptime(timestring, "%H-%M-%S")
     time_diff = datetime.timedelta(seconds=seconds)
     return (time_obj + time_diff).strftime("%H-%M-%S")
-        
-def create_new_fname(vidpath, frame_idx, fps, outdir=None, prefix=""):
-    vid_dir = os.path.dirname(vidpath)
-    split_vidname = os.path.basename(vidpath).split(".")
-    ext = split_vidname[-1]
-    time_str = ".".join(split_vidname[:-1])
-    outfile = f"{prefix}{add_seconds_to_timestring(time_str, frame_idx/fps)}.{ext}"
-    if outdir:
-        outpath = os.path.join(outdir, outfile)
-    else:
-        outpath = os.path.join(vid_dir, outfile)
-    return outpath
-
-@torch.no_grad()
-def subclassify(detection_result, cls_model):
-
-    ret = copy.deepcopy(detection_result)
-
-    # clone results so classes can be edited
-    tmp_box_data = ret.boxes.data.clone()
-
-    # extract the detected parts of the image and classify
-    res = cls_model(
-        [
-            ret.orig_img[box[1]:box[3], box[0]:box[2], :]
-            for box in tmp_box_data.round().int()
-        ],
-        imgsz=64,
-        verbose=False
-    )
-
-    # replace subclass if classifier is highly confident
-    if res[0].probs.top1conf.item() > 0.8:
-        # extract existing classes
-        nexisting_names = len(ret.names)
-        tmp_box_data[:, -1] = torch.Tensor([i.probs.top1 + nexisting_names for i in res])
-        ret.boxes.data = tmp_box_data
-        for k, v in res[0].names.items():
-            ret.names[k  + nexisting_names] = v
-
-    return ret
 
 def count_detections(detection_result):
 
@@ -167,8 +100,6 @@ class detected_birb_vid:
         
         self.original_cap.write(original_frame)
         self.trigger_cap.write(trigger_frame)
-        if cv2.waitKey(1) & 0xFF == ord('s'):
-            pass
 
         self.nframes += 1
 
@@ -237,18 +168,13 @@ def main(vidpath, model_detect_path, outdir, model_cls_path = None, save_instanc
     fps=10.0 # temporary fix
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    #model, bird_class_idx = get_model(model_detect_path)
     model = ultralytics.YOLO(model_detect_path, task="detect")
-
-    #model_cls = ultralytics.YOLO(model_cls_path) if model_cls_path else None
-    model_cls = None
 
     print(f"""INPUT VIDEO: {vidpath}
     Resolution: {cap.get(cv2.CAP_PROP_FRAME_HEIGHT)}x{int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}
     FPS:        {fps}
 OUTPUT DIRECTORY: {outdir}/{{originals,triggers}}
 DETECTION MODEL: {model_detect_path}
-CLASSIFICATION MODEL: {model_cls_path}
 
 Beginning processing...
 """)
@@ -256,7 +182,7 @@ Beginning processing...
     subvid = None
     success = cap.isOpened()
     nframe = 0
-    WAITLIMIT=2*fps # wait two seconds before closing video
+    WAITLIMIT=5*fps # wait two seconds before closing video
     wait_counter = WAITLIMIT
     batch_size = WAITLIMIT
     while success and nframe < total_frames:
@@ -279,7 +205,7 @@ Beginning processing...
                 iou=0.5,
                 imgsz=imgsz,
                 verbose=False,
-                half=True
+                #half=True
             )
         else:
             batch_res = []
@@ -287,7 +213,6 @@ Beginning processing...
         for yolo_res in batch_res:
             print(f"frame {nframe+1}/{total_frames}", end=" ")
             # save bool indicating whether a bird was detected
-            #bird_detected = bird_class_idx in yolo_res.boxes.cls
             bird_detected = len(yolo_res.boxes.cls) > 0
             # update wait_counter if bird not detected
             wait_counter = 0 if bird_detected else wait_counter + 1
@@ -295,7 +220,6 @@ Beginning processing...
             if wait_counter < WAITLIMIT:
                 # subclassify
                 if bird_detected:
-                    #if model_cls: yolo_res = subclassify(yolo_res, model_cls)
                     instance_count = count_detections(yolo_res)
                     for k, v in instance_count.items():
                         print(f"{k}: {v}", end=" ")
@@ -306,7 +230,6 @@ Beginning processing...
                     print("no bird detected")
                 # create video if a video isn't currently open
                 if not subvid or not subvid.isOpened():
-                    #subvid = detected_birb_vid(cap, vidpath, nframe, outdir, WAITLIMIT, list(model.names.values()) + list(model_cls.names.values()))
                     subvid = detected_birb_vid(cap, vidpath, nframe, outdir, WAITLIMIT, list(model.names.values()))
                 
                 subvid.write(yolo_res.orig_img, yolo_res.plot(conf=False), instance_count)
@@ -335,4 +258,4 @@ if __name__ == "__main__":
     parser.add_argument("--save-instances", "-s", action="store_true")
     parser.add_argument("--imgsz", "-i", default=864)
     args = parser.parse_args()
-    main(args.video, args.model, args.output_directory, args.cls_model, args.save_instances)
+    main(args.video, args.model, args.output_directory, args.cls_model, args.save_instances, args.imgsz)
