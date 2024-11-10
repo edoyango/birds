@@ -2,6 +2,7 @@ process FFMPEG_CRF {
 
     cpus 12
     memory "3 GB"
+    time "20m"
     container "linuxserver/ffmpeg"
 
     input:
@@ -39,7 +40,7 @@ process MP42GIF {
         fname="$(basename ${file2gif})"
         fname="${fname%.*}"
         duration=$(ffmpeg -i "$file2gif" 2>&1 | grep "Duration"| cut -d ' ' -f 4 | sed s/,// | sed 's@\\..*@@g' | awk '{ split($1, A, ":"); split(A[3], B, "."); print 3600*A[1] + 60*A[2] + B[1] }')
-        let "starttime = $duration/2 - 8"
+        let "starttime = $duration/2 - 11"
         [ "$starttime" -lt 0 ] && starttime=0
         ffmpeg -y -ss "$starttime" -t "!{params.sample_duration}" -i "$file2gif" \\
             -vf "scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse" \\
