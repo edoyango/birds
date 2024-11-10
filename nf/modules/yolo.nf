@@ -1,7 +1,7 @@
 process YOLO {
 
     cpus 8
-    memory "8 GB"
+    memory "16 GB"
     container "ultralytics/ultralytics:8.2.79"
     conda "${moduleDir}/yolo-environment.yml"
     errorStrategy "ignore"
@@ -23,8 +23,7 @@ process YOLO {
     extract-birbs.py \\
         -m "${model_detect}" \\
         -o . \\
-        -v "${video}" \\
-        -c "${model_cls}"
+        -v "${video}"
     mv triggers triggers-${video.baseName}
     mv originals originals-${video.baseName}
     mv instances instances-${video.baseName}
