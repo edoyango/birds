@@ -130,7 +130,7 @@ process EMAIL {
     '''
 }
 
-workflow birbs_processing {
+workflow video_processing {
     ch_date = channel.of(params.date)
     ch_rclone_prefix = channel.of(params.rclone_prefix)
 
@@ -178,5 +178,5 @@ workflow birbs_processing {
 }
 
 workflow {
-    birbs_processing()
+    video_processing()
 }
