@@ -10,7 +10,6 @@ process YOLO {
     input:
     path(video)
     path(model_detect)
-    path(model_cls)
 
     output:
     path("*-${video.baseName}/*.mkv"), optional: true // vidos

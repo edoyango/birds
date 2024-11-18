@@ -141,18 +141,15 @@ workflow video_processing {
         | set{ch_videos}
     
     ch_model_detect = channel.fromPath(params.model_detect, type: "file", checkIfExists: true)
-    ch_model_cls = channel.fromPath(params.model_cls, type: "file", checkIfExists: true)
 
-    (ch_videos, ch_model_detect, ch_model_cls) = ch_videos
+    (ch_videos, ch_model_detect) = ch_videos
         .combine(ch_model_detect.collect())
-        .combine(ch_model_cls.collect())
         .multiMap{it ->
             video: it[0]
             model_detect: it[1]
-            model_cls: it[2]
         }
 
-    (ch_yolo_videos, ch_yolo_imgs, ch_yolo_instances, ch_yolo_meta) = YOLO(ch_videos, ch_model_detect, ch_model_cls)
+    (ch_yolo_videos, ch_yolo_imgs, ch_yolo_instances, ch_yolo_meta) = YOLO(ch_videos, ch_model_detect)
     ch_videos_encoded = FFMPEG_CRF(ch_yolo_videos.flatten())
     ch_yolo_instances.collect().count().view()
     (ch_triggers, ch_originals, ch_instances, ch_allmeta) = ORGANISE(
