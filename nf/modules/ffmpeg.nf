@@ -2,7 +2,7 @@ process FFMPEG_CRF {
 
     cpus 12
     memory "3 GB"
-    time "20m"
+    time "60m"
     container "linuxserver/ffmpeg"
 
     input:
