@@ -218,7 +218,7 @@ Beginning processing...
             batch_res = model(
                 source=frames,
                 #classes=[bird_class_idx],
-                conf=0.46,
+                conf=0.7,
                 iou=0.5,
                 imgsz=imgsz,
                 verbose=False,
