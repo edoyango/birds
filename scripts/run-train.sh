@@ -24,22 +24,7 @@ export APPTAINER_TMPDIR=/dev/shm
 export NO_ALBUMENTATIONS_UPDATE=1
 
 apptainer exec -B "$MOUNTS" --nv $CONTAINER \
-	yolo train \
-		data=../datasets/birds-$version/data.yaml \
-		model=${model}.pt \
-		pretrained=True \
-		epochs=${epochs} \
-		imgsz=$imgsz \
-		cache=True \
-		batch=92 \
-		workers=8 \
-		name=$SLURM_JOB_NAME \
-		exist_ok=True \
-		device=0,1,2,3 \
-		patience=0 \
-		augment=False \
-		optimizer=AdamW \
-		lr0=0.00086 lrf=0.00461 momentum=0.98 weight_decay=0.00057 warmup_epochs=3.97259 warmup_momentum=0.36305 box=5.75867 cls=0.58798 dfl=0.76398
+	yolo train cfg=/vast/scratch/users/yang.e/birds/cfg.yaml
 
 cp ../datasets/birds-$version/data.yaml ../datasets/birds-$version/data-val.yaml
 sed -i 's@val: valid/images@val: test/images@g' ../datasets/birds-$version/data-val.yaml
