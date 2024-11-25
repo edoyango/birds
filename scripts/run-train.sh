@@ -1,16 +1,18 @@
 #!/bin/bash
-#SBATCH --job-name yolov11m_864_3-4_300_train
+#SBATCH --job-name yolov11s_train
 #SBATCH --output %x.out
-#SBATCH --cpus-per-task 48
-#SBATCH --mem 200G
+#SBATCH --cpus-per-task 8
+#SBATCH --mem 24G
 #SBATCH -p gpuq
-#SBATCH --gres gpu:A30:4
-#SBATCH --qos bonus
+#SBATCH --gres gpu:A30:1
+##SBATCH --qos bonus
 #SBATCH --requeue
 #SBATCH --time 12:0:0
 
 set -ue
-readarray -t -d _ args <<< ${SLURM_JOB_NAME}
+cfg_file=/vast/scratch/users/yang.e/birds/cfg.yaml
+run_name="$(grep name $cfg_file | cut -d' ' -f 2 | tr -d '"')"
+readarray -t -d _ args <<< "$run_name"
 model=${args[0]}
 imgsz=${args[1]}
 version=${args[2]}
@@ -24,16 +26,16 @@ export APPTAINER_TMPDIR=/dev/shm
 export NO_ALBUMENTATIONS_UPDATE=1
 
 apptainer exec -B "$MOUNTS" --nv $CONTAINER \
-	yolo train cfg=/vast/scratch/users/yang.e/birds/cfg.yaml
+	yolo train cfg=$cfg_file
 
 cp ../datasets/birds-$version/data.yaml ../datasets/birds-$version/data-val.yaml
 sed -i 's@val: valid/images@val: test/images@g' ../datasets/birds-$version/data-val.yaml
 apptainer exec -B "$MOUNTS" --nv $CONTAINER \
 	yolo detect val \
 		data=../datasets/birds-$version/data-val.yaml \
-		model=runs/detect/${SLURM_JOB_NAME}/weights/best.pt \
-		name=${SLURM_JOB_NAME}_test \
+		model=runs/detect/${run_name}/weights/best.pt \
+		name=${run_name}_test \
 		exist_ok=True \
 		imgsz=$imgsz
 
-sbatch --wrap "apptainer exec -B "$MOUNTS" --nv $CONTAINER yolo export model=runs/detect/${SLURM_JOB_NAME}/weights/best.pt format=engine batch=20 half=True" -c 4 --mem 20G --gres gpu:A30:1 -p gpuq
+apptainer exec -B "$MOUNTS" --nv $CONTAINER yolo export model=runs/detect/${run_name}/weights/best.pt format=engine batch=50 half=True
