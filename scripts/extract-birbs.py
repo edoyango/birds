@@ -130,7 +130,7 @@ class detected_birb_vid:
         self.trigger_frame_queue.put(None)
 
         # delete video if too short
-        if self.nframes < self.minframes:
+        if self.nframes <= self.minframes:
             os.remove(str(self.original_vidpath))
             os.remove(str(self.trigger_vidpath))
 
