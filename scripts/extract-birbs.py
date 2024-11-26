@@ -59,7 +59,6 @@ def video_writer_worker(queue, path, fps, w, h, minframes):
     # delete video if too short
     if nframes <= minframes:
         os.remove(path)
-        os.remove(path)
 
 class detected_birb_vid:
 
