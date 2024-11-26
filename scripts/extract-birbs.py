@@ -222,7 +222,7 @@ Beginning processing...
                 #classes=[bird_class_idx],
                 conf=conf,
                 iou=0.5,
-                imgsz=(864,512),
+                imgsz=imgsz,
                 verbose=False,
                 #half=True
             )
