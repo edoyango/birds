@@ -22,7 +22,8 @@ process YOLO {
     extract-birbs.py \\
         -m "${model_detect}" \\
         -o . \\
-        -v "${video}"
+        -v "${video}" \\
+        -c ${params.conf}
     mv triggers triggers-${video.baseName}
     mv originals originals-${video.baseName}
     mv instances instances-${video.baseName}

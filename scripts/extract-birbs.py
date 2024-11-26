@@ -39,7 +39,7 @@ def count_detections(detection_result):
     
     return {detection_result.names[k]: v for k, v in counts.items()}
 
-def video_writer_worker(queue, path, fps, w, h):
+def video_writer_worker(queue, path, fps, w, h, minframes):
     cap = cv2.VideoWriter(
         path,
         cv2.VideoWriter_fourcc(*"mp4v"),
@@ -47,12 +47,19 @@ def video_writer_worker(queue, path, fps, w, h):
         (w, h)
     )
     if not cap.isOpened(): raise RuntimeError(f"Couldn't create video file {path}")
+    nframes = 0
     while True:
         frame = queue.get()
         if frame is None:
             break
         cap.write(frame)
+        nframes += 1
     cap.release()
+
+    # delete video if too short
+    if nframes <= minframes:
+        os.remove(path)
+        os.remove(path)
 
 class detected_birb_vid:
 
@@ -92,11 +99,11 @@ class detected_birb_vid:
         # create worker multiprocesses
         self.original_worker = mp.Process(
             target=video_writer_worker,
-            args=(self.original_frame_queue, self.original_vidpath, self.fps, self.width, self.height)
+            args=(self.original_frame_queue, self.original_vidpath, self.fps, self.width, self.height, self.minframes)
         )
         self.trigger_worker = mp.Process(
             target=video_writer_worker,
-            args=(self.trigger_frame_queue, self.trigger_vidpath, self.fps, self.width, self.height)
+            args=(self.trigger_frame_queue, self.trigger_vidpath, self.fps, self.width, self.height, self.minframes)
         )
         # start subprocesses
         self.original_worker.start()
@@ -129,11 +136,6 @@ class detected_birb_vid:
         self.original_frame_queue.put(None)
         self.trigger_frame_queue.put(None)
 
-        # delete video if too short
-        if self.nframes <= self.minframes:
-            os.remove(str(self.original_vidpath))
-            os.remove(str(self.trigger_vidpath))
-
         self.opened = False
 
         # write to metadatacsv
@@ -164,7 +166,7 @@ class detected_birb_vid:
     def isOpened(self):
         return self.opened
 
-def main(vidpath, model_detect_path, outdir, save_instances = True, imgsz=864):
+def main(vidpath, model_detect_path, outdir, save_instances = True, imgsz=864, conf=0.7):
 
     vidname = ".".join(os.path.basename(vidpath).split(".")[:-1])
 
@@ -218,9 +220,9 @@ Beginning processing...
             batch_res = model(
                 source=frames,
                 #classes=[bird_class_idx],
-                conf=0.7,
+                conf=conf,
                 iou=0.5,
-                imgsz=imgsz,
+                imgsz=(864,512),
                 verbose=False,
                 #half=True
             )
@@ -273,5 +275,6 @@ if __name__ == "__main__":
     parser.add_argument("--output-directory", "-o", default=".")
     parser.add_argument("--save-instances", "-s", action="store_true")
     parser.add_argument("--imgsz", "-i", default=864)
+    parser.add_argument("--conf", "-c", default=0.7, type=float)
     args = parser.parse_args()
-    main(args.video, args.model, args.output_directory, args.save_instances, args.imgsz)
+    main(args.video, args.model, args.output_directory, args.save_instances, args.imgsz, args.conf)
