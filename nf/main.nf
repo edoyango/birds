@@ -130,6 +130,24 @@ process EMAIL {
     '''
 }
 
+process PICK_VIDEOS {
+
+    cpus 1
+    executor "local"
+    container "quay.io/biocontainers/pandas:0.23.4--py36hf8a1672_0"
+    
+    input:
+    path(metacsv)
+
+    output:
+    stdout
+
+    script:
+    """
+    find-best-vids.py --csv "${metacsv}" --num-videos "${params.nsamples}" --duration "${params.sample_duration}"
+    """
+}
+
 workflow video_processing {
     ch_date = channel.of(params.date)
     ch_rclone_prefix = channel.of(params.rclone_prefix)
@@ -159,7 +177,8 @@ workflow video_processing {
         ch_yolo_meta.collect()
     )
 
-    ch_gif = MP42GIF(ch_triggers, ch_allmeta)
+    ch_vids = PICK_VIDEOS(ch_allmeta)
+    ch_gif = MP42GIF(ch_vids, ch_triggers)
         | STACK_GIFS
         | GIFSICLE
     

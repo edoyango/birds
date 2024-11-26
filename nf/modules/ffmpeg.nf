@@ -24,8 +24,8 @@ process MP42GIF {
     container  "linuxserver/ffmpeg"
 
     input:
+    val(input_vid_names)
     path("triggers")
-    path("meta.csv")
 
     output:
     path("*.gif")
@@ -33,13 +33,13 @@ process MP42GIF {
     shell:
     '''
     # get 5 files with highest average instances
-    for file2gif in $(tail -n +2 -q meta.csv  | sort -n -t , -k 7 -r | head -n "!{params.nsamples}" | cut -d , -f 5)
+    for file2gif in !{input_vid_names}
     do
         file2gif=${file2gif%.*}.mp4
 
         fname="$(basename ${file2gif})"
         fname="${fname%.*}"
-        duration=$(ffmpeg -i "$file2gif" 2>&1 | grep "Duration"| cut -d ' ' -f 4 | sed s/,// | sed 's@\\..*@@g' | awk '{ split($1, A, ":"); split(A[3], B, "."); print 3600*A[1] + 60*A[2] + B[1] }')
+        duration=$(ffmpeg -i "$file2gif" 2>&1 | grep "Duration" | cut -d ' ' -f 4 | sed s/,// | sed 's@\\..*@@g' | awk '{ split($1, A, ":"); split(A[3], B, "."); print 3600*A[1] + 60*A[2] + B[1] }')
         let "starttime = $duration/2 - 11"
         [ "$starttime" -lt 0 ] && starttime=0
         ffmpeg -y -ss "$starttime" -t "!{params.sample_duration}" -i "$file2gif" \\
