@@ -20,7 +20,7 @@ epochs=${args[3]}
 
 module load apptainer/1.3.3
 
-CONTAINER=docker://ultralytics/ultralytics:8.3.1
+CONTAINER=oras://ghcr.io/edoyango/ultralytics:8.3.1 #docker://ultralytics/ultralytics:8.3.1
 MOUNTS="/vast,/stornext,/vast/scratch/users/yang.e/birds/runs:/ultralytics/runs,/vast/scratch/users/yang.e/datasets:/ultralytics/datasets"
 export APPTAINER_TMPDIR=/dev/shm
 export NO_ALBUMENTATIONS_UPDATE=1

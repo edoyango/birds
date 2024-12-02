@@ -2,7 +2,7 @@ process YOLO {
 
     cpus 8
     memory "16 GB"
-    container "ultralytics/ultralytics:8.2.79"
+    container "oras://ghcr.io/edoyango/ultralytics:8.3.1"
     conda "${moduleDir}/yolo-environment.yml"
     errorStrategy "ignore"
     time "1h"
