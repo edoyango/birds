@@ -23,15 +23,19 @@ def main(args):
     video_column = "trigger video path"  # 5th column (0-based index)
     frames_column = "nframes"  # 7th column (0-based index)
     species_columns = ["Dove", "Myna", "Wattlebird", "blackbird", "currawong", "magpie", "sparrow", "starling"]  # 9th to 16th columns (0-based index)
+    metric_column = 'simpsons_diversity'
 
     # Filter rows by minimum duration
     min_frames = args.duration*10 # assume 10 fps
     filtered_data = data[data[frames_column] >= min_frames].copy()
 
     # Calculate Simpson's Diversity Index for each video
-    filtered_data['simpsons_diversity'] = filtered_data[species_columns].apply(
+    filtered_data[metric_column] = filtered_data[species_columns].apply(
         lambda row: calculate_simpsons_diversity(row.tolist()), axis=1
     )
+
+    # weight simpson's diversity with no. of frames
+    filtered_data[metric_column] = filtered_data[metric_column]*filtered_data[frames_column]
 
     # Sort by Simpson's Diversity Index in descending order
     sorted_data = filtered_data.sort_values(by='simpsons_diversity', ascending=False)
