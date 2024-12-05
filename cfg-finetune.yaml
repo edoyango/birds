@@ -1,0 +1,44 @@
+# 28/300 iterations complete ✅ (144530.77s)
+# Results saved to /ultralytics/runs/detect/tune
+# Best fitness=0.7366 observed at iteration 293
+# Best fitness metrics are None
+# Best fitness model is None
+# Best fitness hyperparameters are printed below.
+
+lr0: 0.00735
+lrf: 0.00734
+momentum: 0.77164
+weight_decay: 0.00048
+warmup_epochs: 4.29529
+warmup_momentum: 0.95
+box: 9.07662
+cls: 0.58138
+dfl: 1.27424
+hsv_h: 0.00968
+hsv_s: 0.9
+hsv_v: 0.42665
+degrees: 0.0
+translate: 0.04972
+scale: 0.75872
+shear: 0.0
+perspective: 0.0
+flipud: 0.0
+fliplr: 0.29368
+bgr: 0.0
+mosaic: 0.70902
+mixup: 0.0
+copy_paste: 0.0
+data: "/vast/scratch/users/yang.e/datasets/birds-3-8/data.yaml"
+model: "/vast/scratch/users/yang.e/birds/models/yolov11-birbs.pt"
+pretrained: True
+epochs: 40
+imgsz: 864
+cache: True
+batch: 32
+workers: 8
+name: "yolo11s_864_3-8_30_32_finetune"
+exist_ok: True
+device: "0"
+patience: 0
+augment: False
+optimizer: "AdamW"

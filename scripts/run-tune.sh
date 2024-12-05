@@ -20,7 +20,7 @@ tunedir=$2
 
 module load apptainer/1.3.3
 
-CONTAINER=oras://ghcr.io/edoyango/ultralytics:8.3.1 #docker://ultralytics/ultralytics:8.3.1
+CONTAINER=./custom_tune.sif #oras://ghcr.io/edoyango/ultralytics:8.3.1 #docker://ultralytics/ultralytics:8.3.1
 MOUNTS="/vast,/stornext,/vast/scratch/users/yang.e/datasets:/ultralytics/datasets,$(mkdir -p $tunedir && realpath $tunedir):/ultralytics/runs"
 APPTAINER_TMPDIR=/dev/shm
 
@@ -29,7 +29,8 @@ apptainer exec -B "$MOUNTS" --nv $CONTAINER \
 from ultralytics import YOLO
 import yaml
 
-model = YOLO('yolo11s.pt')
+#model = YOLO('yolo11s.pt')
+model = YOLO('/vast/scratch/users/yang.e/birds/models/yolov11-birbs.pt')
 
 #space = {
 #    'lr0': (1e-5, 1e-1),  # initial learning rate (i.e. SGD=1E-2, Adam=1E-3)
@@ -43,5 +44,5 @@ model = YOLO('yolo11s.pt')
 #    'dfl': (0.4, 6.0),  # dfl loss gain
 #}
 
-model.tune(data='/vast/scratch/users/yang.e/datasets/birds-$version/data.yaml', device=0, iterations=300, imgsz=672, epochs=120, batch=52, optimizer='AdamW', cache=True, plots=False, val=False, exist_ok=True, iou=0.5, augment=True)
+model.tune(data='/vast/scratch/users/yang.e/datasets/birds-$version/data.yaml', device=0, iterations=300, imgsz=704, epochs=40, batch=48, optimizer='AdamW', cache=True, exist_ok=True, iou=0.5, augment=False)
 "

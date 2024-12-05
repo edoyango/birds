@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name yolov11s_train
+#SBATCH --job-name yolov11s_finetune
 #SBATCH --output %x.out
 #SBATCH --cpus-per-task 8
 #SBATCH --mem 24G
@@ -10,7 +10,7 @@
 #SBATCH --time 12:0:0
 
 set -ue
-cfg_file=/vast/scratch/users/yang.e/birds/cfg.yaml
+cfg_file=/vast/scratch/users/yang.e/birds/cfg-finetune.yaml
 run_name="$(grep name $cfg_file | cut -d' ' -f 2 | tr -d '"')"
 readarray -t -d _ args <<< "$run_name"
 model=${args[0]}
@@ -38,4 +38,4 @@ apptainer exec -B "$MOUNTS" --nv $CONTAINER \
 		exist_ok=True \
 		imgsz=$imgsz
 
-apptainer exec -B "$MOUNTS" --nv $CONTAINER yolo export model=runs/detect/${run_name}/weights/best.pt format=engine batch=48 half=True
+apptainer exec -B "$MOUNTS" --nv $CONTAINER yolo export model=runs/detect/${run_name}/weights/best.pt format=engine batch=50 half=True
