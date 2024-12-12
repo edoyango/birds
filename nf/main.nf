@@ -114,7 +114,7 @@ process EMAIL {
         "!{email_list}" \\
         "<html>
         <body>
-            <p>Hi {FIRST},</p>
+            <p>Hi,</p>
             <p>I've been recording videos all day, and across all video frames I saw:</p>
             <ul>
             $birblist
