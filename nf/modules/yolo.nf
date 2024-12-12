@@ -23,7 +23,8 @@ process YOLO {
         -m "${model_detect}" \\
         -o . \\
         -v "${video}" \\
-        -c ${params.conf}
+        -c ${params.conf} \\
+        -i ${params.imgsz}
     mv triggers triggers-${video.baseName}
     mv originals originals-${video.baseName}
     mv instances instances-${video.baseName}
