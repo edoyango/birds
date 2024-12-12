@@ -57,7 +57,7 @@ def video_writer_worker(queue, path, fps, w, h, minframes):
     cap.release()
 
     # delete video if too short
-    if nframes <= minframes:
+    if nframes <= minframes + 1*fps:
         os.remove(path)
 
 class detected_birb_vid:
@@ -200,7 +200,7 @@ Beginning processing...
     subvid = None
     success = cap.isOpened()
     nframe = 0
-    WAITLIMIT=5*fps # wait two seconds before closing video
+    WAITLIMIT= 48 #5*fps # wait two seconds before closing video
     wait_counter = WAITLIMIT
     batch_size = WAITLIMIT
     while success and nframe < total_frames:
@@ -223,7 +223,7 @@ Beginning processing...
                 iou=0.5,
                 imgsz=imgsz,
                 verbose=False,
-                #half=True
+                half=True
             )
         else:
             batch_res = []
