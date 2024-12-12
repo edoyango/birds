@@ -22,7 +22,7 @@ def main(args):
     # Extract relevant columns
     video_column = "trigger video path"  # 5th column (0-based index)
     frames_column = "nframes"  # 7th column (0-based index)
-    species_columns = ["Dove", "Myna", "Wattlebird", "blackbird", "currawong", "magpie", "sparrow", "starling"]  # 9th to 16th columns (0-based index)
+    species_columns = ["Blackbird", "Butcherbird", "Currawong", "Dove", "Lorikeet", "Myna", "Sparrow", "Starling", "Wattlebird"]  # 9th column onward (0-based index)
     metric_column = 'simpsons_diversity'
 
     # Filter rows by minimum duration
