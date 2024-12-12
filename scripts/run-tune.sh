@@ -29,8 +29,9 @@ apptainer exec -B "$MOUNTS" --nv $CONTAINER \
 from ultralytics import YOLO
 import yaml
 
-#model = YOLO('yolo11s.pt')
-model = YOLO('/vast/scratch/users/yang.e/birds/models/yolov11-birbs.pt')
+model = YOLO('yolo11s.pt')
+#model = YOLO('/vast/scratch/users/yang.e/birds/models/yolov11-birbs.pt')
+#model = YOLO('/vast/scratch/users/yang.e/birds/runs/detect/yolo11s_704_3-7_120_48/weights/best.pt')
 
 #space = {
 #    'lr0': (1e-5, 1e-1),  # initial learning rate (i.e. SGD=1E-2, Adam=1E-3)
@@ -44,5 +45,5 @@ model = YOLO('/vast/scratch/users/yang.e/birds/models/yolov11-birbs.pt')
 #    'dfl': (0.4, 6.0),  # dfl loss gain
 #}
 
-model.tune(data='/vast/scratch/users/yang.e/datasets/birds-$version/data.yaml', device=0, iterations=300, imgsz=704, epochs=40, batch=48, optimizer='AdamW', cache=True, exist_ok=True, iou=0.5, augment=False)
+model.tune(data='/vast/scratch/users/yang.e/datasets/birds-$version/data.yaml', device=0, iterations=300, imgsz=704, epochs=120, batch=48, optimizer='AdamW', cache=True, exist_ok=True, iou=0.5, augment=False)
 "
