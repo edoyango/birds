@@ -40,5 +40,5 @@ name: "yolo11s_704_3-9_120_48"
 exist_ok: True
 device: "0"
 patience: 0
-augment: False
+augment: True
 optimizer: "AdamW"

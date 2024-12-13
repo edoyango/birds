@@ -33,9 +33,9 @@ sed -i 's@val: valid/images@val: test/images@g' ../datasets/birds-$version/data-
 apptainer exec -B "$MOUNTS" --nv $CONTAINER \
 	yolo detect val \
 		data=../datasets/birds-$version/data-val.yaml \
-		model=runs/detect/${run_name}/weights/best.pt \
+		model=runs/detect/${run_name}/weights/last.pt \
 		name=${run_name}_test \
 		exist_ok=True \
 		imgsz=$imgsz
 
-apptainer exec -B "$MOUNTS" --nv $CONTAINER yolo export model=runs/detect/${run_name}/weights/best.pt format=engine batch=48 half=True
+apptainer exec -B "$MOUNTS" --nv $CONTAINER yolo export model=runs/detect/${run_name}/weights/last.pt format=engine batch=48 half=True

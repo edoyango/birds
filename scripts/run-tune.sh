@@ -20,7 +20,7 @@ tunedir=$2
 
 module load apptainer/1.3.3
 
-CONTAINER=./custom_tune.sif #oras://ghcr.io/edoyango/ultralytics:8.3.1 #docker://ultralytics/ultralytics:8.3.1
+CONTAINER=oras://ghcr.io/edoyango/ultralytics:8.3.1 #docker://ultralytics/ultralytics:8.3.1
 MOUNTS="/vast,/stornext,/vast/scratch/users/yang.e/datasets:/ultralytics/datasets,$(mkdir -p $tunedir && realpath $tunedir):/ultralytics/runs"
 APPTAINER_TMPDIR=/dev/shm
 
@@ -45,5 +45,5 @@ model = YOLO('yolo11s.pt')
 #    'dfl': (0.4, 6.0),  # dfl loss gain
 #}
 
-model.tune(data='/vast/scratch/users/yang.e/datasets/birds-$version/data.yaml', device=0, iterations=300, imgsz=704, epochs=120, batch=48, optimizer='AdamW', cache=True, exist_ok=True, iou=0.5, augment=False)
+model.tune(data='/vast/scratch/users/yang.e/datasets/birds-$version/data.yaml', device=0, iterations=300, imgsz=704, epochs=120, batch=48, optimizer='AdamW', cache=True, exist_ok=True, iou=0.5, augment=True, val=False, save=False)
 "
