@@ -89,7 +89,6 @@ process EMAIL {
     memory "1 GB"
     executor "local"
     module "rclone"
-    errorStrategy "ignore"
 
     input:
     each date
