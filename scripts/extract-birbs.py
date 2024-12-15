@@ -12,6 +12,8 @@ import pathlib
 import csv
 from collections import Counter
 import multiprocessing as mp
+from rknn_yolo11 import RKNN_YOLO11
+import rknn_yolo11
 
 def open_video(vname):
 
@@ -30,7 +32,7 @@ def add_seconds_to_timestring(timestring: str, seconds: int):
 def count_detections(detection_result):
 
     counts = {}
-    for i in detection_result.boxes.cls.cpu().int():
+    for i in detection_result.classes:
         ii = int(i)
         if counts.get(ii):
             counts[ii] += 1
@@ -186,7 +188,8 @@ def main(vidpath, model_detect_path, outdir, save_instances = True, imgsz=864, c
     fps=10.0 # temporary fix
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    model = ultralytics.YOLO(model_detect_path, task="detect")
+    # model = ultralytics.YOLO(model_detect_path, task="detect")
+    model = RKNN_YOLO11("yolov11-birbs.rknn", target="rk3588")
 
     print(f"""INPUT VIDEO: {vidpath}
     Resolution: {cap.get(cv2.CAP_PROP_FRAME_HEIGHT)}x{int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}
@@ -206,63 +209,60 @@ Beginning processing...
     while success and nframe < total_frames:
 
         # read frames into batch
-        frames = []
-        while len(frames) < batch_size:
-            success, frame = cap.read()
-            if success: 
-                frames.append(frame)
-            elif len(frames) > 0:
-                frames.append(np.zeros_like(frames[0])) # loop logic ensures first frame is always present
+        success, frame = cap.read()
 
         # inference on frames batch
-        if frames: 
-            batch_res = model(
-                source=frames,
-                #classes=[bird_class_idx],
-                conf=conf,
-                iou=0.5,
-                imgsz=imgsz,
-                verbose=False,
-                half=True
-            )
+        if frame is not None: 
+            # batch_res = model(
+            #     source=frames,
+            #     #classes=[bird_class_idx],
+            #     conf=conf,
+            #     iou=0.5,
+            #     imgsz=imgsz,
+            #     verbose=False,
+            #     half=True
+            # )
+            res = model(frame, (704, 704), conf=0.6)
         else:
-            batch_res = []
+            res = []
       
-        for yolo_res in batch_res:
-            print(f"frame {nframe+1}/{total_frames}", end=" ")
-            # save bool indicating whether a bird was detected
-            bird_detected = len(yolo_res.boxes.cls) > 0
-            # update wait_counter if bird not detected
-            wait_counter = 0 if bird_detected else wait_counter + 1
-            # keep writing to video if wait limit hasn't been reached
-            if wait_counter < WAITLIMIT:
-                # subclassify
-                if bird_detected:
-                    instance_count = count_detections(yolo_res)
-                    for k, v in instance_count.items():
-                        print(f"{k}: {v}", end=" ")
-                    print()
-                    if save_instances: yolo_res.save_crop(instances_dir, add_seconds_to_timestring(vidname, nframe/fps))
-                else:
-                    instance_count = {}
-                    print("no bird detected")
-                # create video if a video isn't currently open
-                if not subvid or not subvid.isOpened():
-                    subvid = detected_birb_vid(cap, vidpath, nframe, outdir, WAITLIMIT, list(model.names.values()))
-                
-                subvid.write(yolo_res.orig_img, yolo_res.plot(conf=False), instance_count)
+        print(f"frame {nframe+1}/{total_frames}", end=" ")
+        # save bool indicating whether a bird was detected
+        bird_detected = res.boxes is not None
+        # update wait_counter if bird not detected
+        wait_counter = 0 if bird_detected else wait_counter + 1
+        # keep writing to video if wait limit hasn't been reached
+        if wait_counter < WAITLIMIT:
+            # subclassify
+            if bird_detected:
+                instance_count = count_detections(res)
+                for k, v in instance_count.items():
+                    print(f"{k}: {v}", end=" ")
+                print()
+                if save_instances: res.save_crop(instances_dir, add_seconds_to_timestring(vidname, nframe/fps))
             else:
+                instance_count = {}
                 print("no bird detected")
-                # close the output video if it's open
-                if subvid and subvid.isOpened():
-                    subvid.release()
-            nframe += 1
+            # create video if a video isn't currently open
+            if not subvid or not subvid.isOpened():
+                subvid = detected_birb_vid(cap, vidpath, nframe, outdir, WAITLIMIT, rknn_yolo11.CLASSES)
+            
+            subvid.write(res.img, res.draw(), instance_count)
+        else:
+            print("no bird detected")
+            # close the output video if it's open
+            if subvid and subvid.isOpened():
+                subvid.release()
+        nframe += 1
     
     cap.release() 
     if subvid and subvid.isOpened(): subvid.release() 
         
     # Closes all the frames 
-    cv2.destroyAllWindows() 
+    try:
+        cv2.destroyAllWindows() 
+    except:
+        pass
        
 if __name__ == "__main__":
 
