@@ -1,19 +1,193 @@
-#!/usr/bin/env python3
-
-import cv2
-import numpy as  np
 import os
-import datetime
+import cv2
 import sys
-import torch
-import copy
-import ultralytics
-import pathlib
-import csv
-from collections import Counter
+import argparse
 import multiprocessing as mp
-from rknn_yolo11 import RKNN_YOLO11
-import rknn_yolo11
+import torch
+
+# add path
+realpath = os.path.abspath(__file__)
+_sep = os.path.sep
+realpath = realpath.split(_sep)
+sys.path.append(os.path.join(realpath[0]+_sep, *realpath[1:realpath.index('rknn_model_zoo')+1]))
+
+from py_utils.coco_utils import COCO_test_helper
+import numpy as np
+
+OBJ_THRESH = 0.6
+NMS_THRESH = 0.45
+
+# The follew two param is for map test
+# OBJ_THRESH = 0.001
+# NMS_THRESH = 0.65
+
+IMG_SIZE = (704, 704)  # (width, height), such as (1280, 736)
+
+CLASSES = ("Blackbird", "Butcherbird", "Currawong", "Dove", "Lorikeet", "Myna", "Sparrow", "Starling", "Wattlebird")
+coco_id_list = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+
+def filter_boxes(boxes, box_confidences, box_class_probs):
+    """Filter boxes with object threshold.
+    """
+    box_confidences = box_confidences.reshape(-1)
+    candidate, class_num = box_class_probs.shape
+
+    class_max_score = np.max(box_class_probs, axis=-1)
+    classes = np.argmax(box_class_probs, axis=-1)
+
+    _class_pos = np.where(class_max_score* box_confidences >= OBJ_THRESH)
+    scores = (class_max_score* box_confidences)[_class_pos]
+
+    boxes = boxes[_class_pos]
+    classes = classes[_class_pos]
+
+    return boxes, classes, scores
+
+def nms_boxes(boxes, scores):
+    """Suppress non-maximal boxes.
+    # Returns
+        keep: ndarray, index of effective boxes.
+    """
+    x = boxes[:, 0]
+    y = boxes[:, 1]
+    w = boxes[:, 2] - boxes[:, 0]
+    h = boxes[:, 3] - boxes[:, 1]
+
+    areas = w * h
+    order = scores.argsort()[::-1]
+
+    keep = []
+    while order.size > 0:
+        i = order[0]
+        keep.append(i)
+
+        xx1 = np.maximum(x[i], x[order[1:]])
+        yy1 = np.maximum(y[i], y[order[1:]])
+        xx2 = np.minimum(x[i] + w[i], x[order[1:]] + w[order[1:]])
+        yy2 = np.minimum(y[i] + h[i], y[order[1:]] + h[order[1:]])
+
+        w1 = np.maximum(0.0, xx2 - xx1 + 0.00001)
+        h1 = np.maximum(0.0, yy2 - yy1 + 0.00001)
+        inter = w1 * h1
+
+        ovr = inter / (areas[i] + areas[order[1:]] - inter)
+        inds = np.where(ovr <= NMS_THRESH)[0]
+        order = order[inds + 1]
+    keep = np.array(keep)
+    return keep
+
+def dfl(position):
+    # Distribution Focal Loss (DFL)
+    x = torch.tensor(position)
+    n,c,h,w = x.shape
+    p_num = 4
+    mc = c//p_num
+    y = x.reshape(n,p_num,mc,h,w)
+    y = y.softmax(2)
+    acc_metrix = torch.tensor(range(mc)).float().reshape(1,1,mc,1,1)
+    y = (y*acc_metrix).sum(2)
+    return y.numpy()
+
+
+def box_process(position):
+    grid_h, grid_w = position.shape[2:4]
+    col, row = np.meshgrid(np.arange(0, grid_w), np.arange(0, grid_h))
+    col = col.reshape(1, 1, grid_h, grid_w)
+    row = row.reshape(1, 1, grid_h, grid_w)
+    grid = np.concatenate((col, row), axis=1)
+    stride = np.array([IMG_SIZE[1]//grid_h, IMG_SIZE[0]//grid_w]).reshape(1,2,1,1)
+
+    position = dfl(position)
+    box_xy  = grid +0.5 -position[:,0:2,:,:]
+    box_xy2 = grid +0.5 +position[:,2:4,:,:]
+    xyxy = np.concatenate((box_xy*stride, box_xy2*stride), axis=1)
+
+    return xyxy
+
+def post_process(input_data):
+    boxes, scores, classes_conf = [], [], []
+    defualt_branch=3
+    pair_per_branch = len(input_data)//defualt_branch
+    # Python 忽略 score_sum 输出
+    for i in range(defualt_branch):
+        boxes.append(box_process(input_data[pair_per_branch*i]))
+        classes_conf.append(input_data[pair_per_branch*i+1])
+        scores.append(np.ones_like(input_data[pair_per_branch*i+1][:,:1,:,:], dtype=np.float32))
+
+    def sp_flatten(_in):
+        ch = _in.shape[1]
+        _in = _in.transpose(0,2,3,1)
+        return _in.reshape(-1, ch)
+
+    boxes = [sp_flatten(_v) for _v in boxes]
+    classes_conf = [sp_flatten(_v) for _v in classes_conf]
+    scores = [sp_flatten(_v) for _v in scores]
+
+    boxes = np.concatenate(boxes)
+    classes_conf = np.concatenate(classes_conf)
+    scores = np.concatenate(scores)
+
+    # filter according to threshold
+    boxes, classes, scores = filter_boxes(boxes, scores, classes_conf)
+
+    # nms
+    nboxes, nclasses, nscores = [], [], []
+    for c in set(classes):
+        inds = np.where(classes == c)
+        b = boxes[inds]
+        c = classes[inds]
+        s = scores[inds]
+        keep = nms_boxes(b, s)
+
+        if len(keep) != 0:
+            nboxes.append(b[keep])
+            nclasses.append(c[keep])
+            nscores.append(s[keep])
+
+    if not nclasses and not nscores:
+        return None, None, None
+
+    boxes = np.concatenate(nboxes)
+    classes = np.concatenate(nclasses)
+    scores = np.concatenate(nscores)
+
+    return boxes, classes, scores
+
+
+def draw(image, boxes, scores, classes):
+    for box, score, cl in zip(boxes, scores, classes):
+        top, left, right, bottom = [int(_b) for _b in box]
+        print("%s @ (%d %d %d %d) %.3f" % (CLASSES[cl], top, left, right, bottom, score))
+        cv2.rectangle(image, (top, left), (right, bottom), (255, 0, 0), 2)
+        cv2.putText(image, '{0} {1:.2f}'.format(CLASSES[cl], score),
+                    (top, left - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+def setup_model(args):
+    model_path = args.model_path
+    if model_path.endswith('.pt') or model_path.endswith('.torchscript'):
+        platform = 'pytorch'
+        from py_utils.pytorch_executor import Torch_model_container
+        model = Torch_model_container(args.model_path)
+    elif model_path.endswith('.rknn'):
+        platform = 'rknn'
+        from py_utils.rknn_executor import RKNN_model_container 
+        model = RKNN_model_container(args.model_path, args.target, args.device_id)
+    elif model_path.endswith('onnx'):
+        platform = 'onnx'
+        from py_utils.onnx_executor import ONNX_model_container
+        model = ONNX_model_container(args.model_path)
+    else:
+        assert False, "{} is not rknn/pytorch/onnx model".format(model_path)
+    print('Model-{} is {} model, starting val'.format(model_path, platform))
+    return model, platform
+
+def img_check(path):
+    img_type = ['.jpg', '.jpeg', '.png', '.bmp']
+    for _type in img_type:
+        if path.endswith(_type) or path.endswith(_type.upper()):
+            return True
+    return False
 
 def open_video(vname):
 
@@ -24,256 +198,122 @@ def open_video(vname):
 
     return cap
 
-def add_seconds_to_timestring(timestring: str, seconds: int):
-    time_obj = datetime.datetime.strptime(timestring, "%H-%M-%S")
-    time_diff = datetime.timedelta(seconds=seconds)
-    return (time_obj + time_diff).strftime("%H-%M-%S")
-
-def count_detections(detection_result):
-
-    counts = {}
-    for i in detection_result.classes:
-        ii = int(i)
-        if counts.get(ii):
-            counts[ii] += 1
-        else:
-            counts[ii] = 1
-    
-    return {detection_result.names[k]: v for k, v in counts.items()}
-
-def video_writer_worker(queue, path, fps, w, h, minframes):
-    cap = cv2.VideoWriter(
-        path,
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        fps,
-        (w, h)
-    )
-    if not cap.isOpened(): raise RuntimeError(f"Couldn't create video file {path}")
-    nframes = 0
+def worker(result_queue):
+    iframe = 0
     while True:
-        frame = queue.get()
+        frame = result_queue.get()
         if frame is None:
             break
-        cap.write(frame)
-        nframes += 1
-    cap.release()
+        img_name = f"potato{iframe}.jpg"
+        iframe += 1
+        if not os.path.exists('./result'):
+            os.mkdir('./result')
+        result_path = os.path.join('./result', img_name)
+        cv2.imwrite(result_path, frame)
 
-    # delete video if too short
-    if nframes <= minframes + 1*fps:
-        os.remove(path)
-
-class detected_birb_vid:
-
-    def __init__(self, reference_cap, reference_vidname, frame_offset, outdir, minframes, instances_names):
-
-        # check that reference_cap is open
-        if not reference_cap.isOpened():
-            raise RuntimeError("Input reference video capture not opened!")
-        
-        # save reference cap meta data
-        self.fps = float(reference_cap.get(cv2.CAP_PROP_FPS))
-        self.width = int(reference_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.height = int(reference_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.minframes = minframes
-
-        # create paths for output original/trigger subvideos/images
-        rv = pathlib.Path(reference_vidname)
-        self.reference_vidpath = rv
-        outpath = pathlib.Path(outdir)
-        if not rv.is_file():
-            raise RuntimeError("Input reference video path is not a file!")
-        reference_timestr = rv.stem[-8:]
-        self.prefix = rv.stem[:-8]
-        reference_time = datetime.datetime.strptime(reference_timestr, "%H-%M-%S")
-        self.start_time = reference_time + datetime.timedelta(seconds=frame_offset/self.fps)
-        self.start_timestr = self.start_time.strftime("%H-%M-%S")
-        self.original_vidpath = outpath.joinpath("originals", f"original-{self.prefix}{self.start_timestr}{rv.suffix}")
-        self.trigger_vidpath = outpath.joinpath("triggers", f"trigger-{self.prefix}{self.start_timestr}{rv.suffix}")
-        self.original_firstframepath = outpath.joinpath("originals", "first_frames", f"original-{self.prefix}{self.start_timestr}.jpg")
-        self.trigger_firstframepath = outpath.joinpath("triggers", "first_frames", f"trigger-{self.prefix}{self.start_timestr}.jpg")
-        self.meta_csvpath = outpath.joinpath("meta.csv")
-
-        ## initiate videowriter workers for original and trigger videos
-        # create quese to store frames
-        self.original_frame_queue = mp.Queue()
-        self.trigger_frame_queue = mp.Queue()
-        # create worker multiprocesses
-        self.original_worker = mp.Process(
-            target=video_writer_worker,
-            args=(self.original_frame_queue, self.original_vidpath, self.fps, self.width, self.height, self.minframes)
-        )
-        self.trigger_worker = mp.Process(
-            target=video_writer_worker,
-            args=(self.trigger_frame_queue, self.trigger_vidpath, self.fps, self.width, self.height, self.minframes)
-        )
-        # start subprocesses
-        self.original_worker.start()
-        self.trigger_worker.start()
-
-        # video metadata
-        self.nframes = 0
-        self.ninstances = 0
-        self.ninstances_each = {n: 0 for n in instances_names}
-        self.opened = True
-
-    def write(self, original_frame, trigger_frame, instances):
-
-        # save frame as image in case no frames have been written yet
-        if not self.nframes:
-            cv2.imwrite(str(self.original_firstframepath), original_frame)
-            cv2.imwrite(str(self.trigger_firstframepath), trigger_frame)
-        
-        self.original_frame_queue.put(original_frame)
-        self.trigger_frame_queue.put(trigger_frame)
-
-        self.nframes += 1
-
-        for k, v in instances.items():
-            self.ninstances_each[k] += v
-            self.ninstances += v
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Process some integers.')
+    # basic params
+    parser.add_argument('--model_path', type=str, required= True, help='model path, could be .pt or .rknn file')
+    parser.add_argument('--target', type=str, default='rk3566', help='target RKNPU platform')
+    parser.add_argument('--device_id', type=str, default=None, help='device id')
     
-    def release(self):
-        # Send None to subprocesses to break them
-        self.original_frame_queue.put(None)
-        self.trigger_frame_queue.put(None)
+    parser.add_argument('--img_show', action='store_true', default=False, help='draw the result and show')
+    parser.add_argument('--img_save', action='store_true', default=False, help='save the result')
 
-        self.opened = False
+    # data params
+    parser.add_argument('--anno_json', type=str, default='../../../datasets/COCO/annotations/instances_val2017.json', help='coco annotation path')
+    # coco val folder: '../../../datasets/COCO//val2017'
+    parser.add_argument('--video', '-v', type=str)
+    parser.add_argument('--coco_map_test', action='store_true', help='enable coco map test')
+    parser.add_argument('--torch-threads', '-t', default=8, type=int)
 
-        # write to metadatacsv
-        row = [
-            str(self.reference_vidpath),
-            self.start_timestr,
-            str(self.original_vidpath),
-            str(self.original_firstframepath),
-            str(self.trigger_vidpath),
-            str(self.trigger_firstframepath),
-            str(self.nframes),
-            str(self.ninstances/self.nframes)
-        ]
-        header = ["reference video path", "start time", "original video path", "original first frame path", "trigger video path", "trigger first frame path", "nframes", "average ninstance per frame"]
-        for k, v in self.ninstances_each.items():
-            header.append(k)
-            row.append(str(v))
-        if self.meta_csvpath.exists() and self.meta_csvpath.is_file():
-            with self.meta_csvpath.open(mode="a") as f:
-                csvwriter = csv.writer(f)
-                csvwriter.writerow(row)
-        else:
-            with self.meta_csvpath.open(mode="w") as f:
-                csvwriter = csv.writer(f)
-                csvwriter.writerow(header)
-                csvwriter.writerow(row)
-
-    def isOpened(self):
-        return self.opened
-
-def main(vidpath, model_detect_path, outdir, save_instances = True, imgsz=864, conf=0.7):
-
-    vidname = ".".join(os.path.basename(vidpath).split(".")[:-1])
-
-    # setting up output directory
-    triggers_dir = os.path.join(outdir, "triggers")
-    originals_dir = os.path.join(outdir, "originals")
-    instances_dir = os.path.join(outdir, "instances")
-    originals_first_frames_dir = os.path.join(originals_dir, "first_frames")
-    triggers_first_frames_dir = os.path.join(triggers_dir, "first_frames")
-    os.makedirs(triggers_dir, exist_ok=True)
-    os.makedirs(originals_dir, exist_ok=True)
-    os.makedirs(instances_dir, exist_ok=True)
-    os.makedirs(originals_first_frames_dir, exist_ok=True)
-    os.makedirs(triggers_first_frames_dir, exist_ok=True)
-
-    cap = open_video(vidpath)
-    #fps = cap.get(cv2.CAP_PROP_FPS)
-    fps=10.0 # temporary fix
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    # model = ultralytics.YOLO(model_detect_path, task="detect")
-    model = RKNN_YOLO11("yolov11-birbs.rknn", target="rk3588")
-
-    print(f"""INPUT VIDEO: {vidpath}
-    Resolution: {cap.get(cv2.CAP_PROP_FRAME_HEIGHT)}x{int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}
-    FPS:        {fps}
-OUTPUT DIRECTORY: {outdir}/{{originals,triggers}}
-DETECTION MODEL: {model_detect_path}
-
-Beginning processing...
-""")
-
-    subvid = None
-    success = cap.isOpened()
-    nframe = 0
-    WAITLIMIT= 48 #5*fps # wait two seconds before closing video
-    wait_counter = WAITLIMIT
-    batch_size = WAITLIMIT
-    while success and nframe < total_frames:
-
-        # read frames into batch
-        success, frame = cap.read()
-
-        # inference on frames batch
-        if frame is not None: 
-            # batch_res = model(
-            #     source=frames,
-            #     #classes=[bird_class_idx],
-            #     conf=conf,
-            #     iou=0.5,
-            #     imgsz=imgsz,
-            #     verbose=False,
-            #     half=True
-            # )
-            res = model(frame, (704, 704), conf=0.6)
-        else:
-            res = []
-      
-        print(f"frame {nframe+1}/{total_frames}", end=" ")
-        # save bool indicating whether a bird was detected
-        bird_detected = res.boxes is not None
-        # update wait_counter if bird not detected
-        wait_counter = 0 if bird_detected else wait_counter + 1
-        # keep writing to video if wait limit hasn't been reached
-        if wait_counter < WAITLIMIT:
-            # subclassify
-            if bird_detected:
-                instance_count = count_detections(res)
-                for k, v in instance_count.items():
-                    print(f"{k}: {v}", end=" ")
-                print()
-                if save_instances: res.save_crop(instances_dir, add_seconds_to_timestring(vidname, nframe/fps))
-            else:
-                instance_count = {}
-                print("no bird detected")
-            # create video if a video isn't currently open
-            if not subvid or not subvid.isOpened():
-                subvid = detected_birb_vid(cap, vidpath, nframe, outdir, WAITLIMIT, rknn_yolo11.CLASSES)
-            
-            subvid.write(res.img, res.draw(), instance_count)
-        else:
-            print("no bird detected")
-            # close the output video if it's open
-            if subvid and subvid.isOpened():
-                subvid.release()
-        nframe += 1
-    
-    cap.release() 
-    if subvid and subvid.isOpened(): subvid.release() 
-        
-    # Closes all the frames 
-    try:
-        cv2.destroyAllWindows() 
-    except:
-        pass
-       
-if __name__ == "__main__":
-
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--video", "-v")
-    parser.add_argument("--model", "-m", default="yolov8n.pt")
-    parser.add_argument("--output-directory", "-o", default=".")
-    parser.add_argument("--save-instances", "-s", action="store_true")
-    parser.add_argument("--imgsz", "-i", default=864)
-    parser.add_argument("--conf", "-c", default=0.7, type=float)
     args = parser.parse_args()
-    main(args.video, args.model, args.output_directory, args.save_instances, args.imgsz, args.conf)
+
+    torch.set_num_threads(args.torch_threads)
+
+    # init model
+    model, platform = setup_model(args)
+
+    cap = open_video(args.video)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if args.img_save:
+        frame_queue = mp.Queue()
+        writer = mp.Process(
+            target=worker,
+            args=[frame_queue]
+        )
+        writer.start()
+    co_helper = COCO_test_helper(enable_letter_box=True)
+
+    # run test
+    for i in range(total_frames):
+        print('infer {}/{}'.format(i+1, total_frames), end='\r')
+
+        suc, img_src = cap.read() #cv2.imread(img_path)
+        if img_src is None:
+            continue
+
+        '''
+        # using for test input dumped by C.demo
+        img_src = np.fromfile('./input_b/demo_c_input_hwc_rgb.txt', dtype=np.uint8).reshape(640,640,3)
+        img_src = cv2.cvtColor(img_src, cv2.COLOR_RGB2BGR)
+        '''
+
+        # Due to rga init with (0,0,0), we using pad_color (0,0,0) instead of (114, 114, 114)
+        pad_color = (0,0,0)
+        img = co_helper.letter_box(im= img_src.copy(), new_shape=(IMG_SIZE[1], IMG_SIZE[0]), pad_color=(0,0,0))
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        # preprocee if not rknn model
+        if platform in ['pytorch', 'onnx']:
+            input_data = img.transpose((2,0,1))
+            input_data = input_data.reshape(1,*input_data.shape).astype(np.float32)
+            input_data = input_data/255.
+        else:
+            input_data = img
+
+        outputs = model.run([input_data])
+        boxes, classes, scores = post_process(outputs)
+
+        if args.img_show or args.img_save:
+            img_p = img_src.copy()
+            if boxes is not None:
+                draw(img_p, co_helper.get_real_box(boxes), scores, classes)
+
+            if args.img_save:
+                frame_queue.put(img_p)
+            #     if not os.path.exists('./result'):
+            #         os.mkdir('./result')
+            #     result_path = os.path.join('./result', img_name)
+            #     cv2.imwrite(result_path, img_p)
+            #     print('Detection result save to {}'.format(result_path))
+                        
+            if args.img_show:
+                cv2.imshow("full post process result", img_p)
+                cv2.waitKeyEx(0)
+
+        # record maps
+        if args.coco_map_test is True:
+            if boxes is not None:
+                for i in range(boxes.shape[0]):
+                    co_helper.add_single_record(image_id = int(img_name.split('.')[0]),
+                                                category_id = coco_id_list[int(classes[i])],
+                                                bbox = boxes[i],
+                                                score = round(scores[i], 5).item()
+                                                )
+    
+    frame_queue.put(None)
+
+    # calculate maps
+    if args.coco_map_test is True:
+        pred_json = args.model_path.split('.')[-2]+ '_{}'.format(platform) +'.json'
+        pred_json = pred_json.split('/')[-1]
+        pred_json = os.path.join('./', pred_json)
+        co_helper.export_to_json(pred_json)
+
+        from py_utils.coco_utils import coco_eval_with_json
+        coco_eval_with_json(args.anno_json, pred_json)
+
+    # release
+    model.release()
