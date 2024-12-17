@@ -302,7 +302,7 @@ def count_detections(classes):
     
     return {CLASSES[k]: v for k, v in counts.items()}
 
-def video_writer_worker(queue, w, h):
+def video_writer_worker(queue, w, h, wait_limit):
     cap = cv2.VideoWriter(
         "result/output_video.mp4",
         cv2.VideoWriter_fourcc(*"mp4v"),
@@ -317,9 +317,8 @@ def video_writer_worker(queue, w, h):
         if res is None:
             break
         else:
-            frame, classes = res
-            cap.write(frame)
-            classes_count = {} if classes is None else count_detections(classes)
+            cap.write(res["drawn image"])
+            classes_count = {} if res["classes"] is None else count_detections(res["classes"])
             nframes += 1
         for k, v in classes_count.items():
             total_class_count[k] += v
@@ -383,7 +382,7 @@ Beginning processing...
     frame_queue = mp.Queue()
     worker = mp.Process(
         target=video_writer_worker,
-        args=(frame_queue, w, h)
+        args=(frame_queue, w, h, wait_limit)
     )
     worker.start()
 
@@ -410,10 +409,16 @@ Beginning processing...
             draw(img_p, co_helper.get_real_box(boxes), scores, classes)
 
         # send frame and classes to video worker
-        frame_queue.put((img_p, classes))
+        frame_queue.put(
+            {"classes": classes,
+             "drawn image": img_p,
+             "original image": frame.copy(),
+            }
+        )
 
         # check video writer worker is still alive
         if worker.exitcode:
+            worker.close()
             raise RuntimeError(f"Worker has died with error code {worker.exitcode}")
 
         iframe +=1
