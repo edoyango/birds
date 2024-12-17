@@ -2,8 +2,6 @@ import os
 import cv2
 import sys
 import argparse
-import multiprocessing as mp
-import torch
 
 # add path
 realpath = os.path.abspath(__file__)
@@ -14,6 +12,7 @@ sys.path.append(os.path.join(realpath[0]+_sep, *realpath[1:realpath.index('rknn_
 from py_utils.coco_utils import COCO_test_helper
 import numpy as np
 
+
 OBJ_THRESH = 0.6
 NMS_THRESH = 0.45
 
@@ -23,8 +22,17 @@ NMS_THRESH = 0.45
 
 IMG_SIZE = (704, 704)  # (width, height), such as (1280, 736)
 
-CLASSES = ("Blackbird", "Butcherbird", "Currawong", "Dove", "Lorikeet", "Myna", "Sparrow", "Starling", "Wattlebird")
-coco_id_list = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+CLASSES = ("person", "bicycle", "car","motorbike ","aeroplane ","bus ","train","truck ","boat","traffic light",
+           "fire hydrant","stop sign ","parking meter","bench","bird","cat","dog ","horse ","sheep","cow","elephant",
+           "bear","zebra ","giraffe","backpack","umbrella","handbag","tie","suitcase","frisbee","skis","snowboard","sports ball","kite",
+           "baseball bat","baseball glove","skateboard","surfboard","tennis racket","bottle","wine glass","cup","fork","knife ",
+           "spoon","bowl","banana","apple","sandwich","orange","broccoli","carrot","hot dog","pizza ","donut","cake","chair","sofa",
+           "pottedplant","bed","diningtable","toilet ","tvmonitor","laptop	","mouse	","remote ","keyboard ","cell phone","microwave ",
+           "oven ","toaster","sink","refrigerator ","book","clock","vase","scissors ","teddy bear ","hair drier", "toothbrush ")
+
+coco_id_list = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 31, 32, 33, 34,
+         35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
+         64, 65, 67, 70, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 84, 85, 86, 87, 88, 89, 90]
 
 
 def filter_boxes(boxes, box_confidences, box_class_probs):
@@ -79,6 +87,7 @@ def nms_boxes(boxes, scores):
 
 def dfl(position):
     # Distribution Focal Loss (DFL)
+    import torch
     x = torch.tensor(position)
     n,c,h,w = x.shape
     p_num = 4
@@ -165,20 +174,12 @@ def draw(image, boxes, scores, classes):
 
 def setup_model(args):
     model_path = args.model_path
-    if model_path.endswith('.pt') or model_path.endswith('.torchscript'):
-        platform = 'pytorch'
-        from py_utils.pytorch_executor import Torch_model_container
-        model = Torch_model_container(args.model_path)
-    elif model_path.endswith('.rknn'):
+    if model_path.endswith('.rknn'):
         platform = 'rknn'
         from py_utils.rknn_executor import RKNN_model_container 
         model = RKNN_model_container(args.model_path, args.target, args.device_id)
-    elif model_path.endswith('onnx'):
-        platform = 'onnx'
-        from py_utils.onnx_executor import ONNX_model_container
-        model = ONNX_model_container(args.model_path)
     else:
-        assert False, "{} is not rknn/pytorch/onnx model".format(model_path)
+        assert False, "{} is not rknn model".format(model_path)
     print('Model-{} is {} model, starting val'.format(model_path, platform))
     return model, platform
 
@@ -189,28 +190,6 @@ def img_check(path):
             return True
     return False
 
-def open_video(vname):
-
-    cap = cv2.VideoCapture(vname)
-
-    if (cap.isOpened() == False):  
-        raise RuntimeError("Error reading video file")
-
-    return cap
-
-def worker(result_queue):
-    iframe = 0
-    while True:
-        frame = result_queue.get()
-        if frame is None:
-            break
-        img_name = f"potato{iframe}.jpg"
-        iframe += 1
-        if not os.path.exists('./result'):
-            os.mkdir('./result')
-        result_path = os.path.join('./result', img_name)
-        cv2.imwrite(result_path, frame)
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Process some integers.')
     # basic params
@@ -218,102 +197,56 @@ if __name__ == '__main__':
     parser.add_argument('--target', type=str, default='rk3566', help='target RKNPU platform')
     parser.add_argument('--device_id', type=str, default=None, help='device id')
     
-    parser.add_argument('--img_show', action='store_true', default=False, help='draw the result and show')
     parser.add_argument('--img_save', action='store_true', default=False, help='save the result')
 
     # data params
-    parser.add_argument('--anno_json', type=str, default='../../../datasets/COCO/annotations/instances_val2017.json', help='coco annotation path')
-    # coco val folder: '../../../datasets/COCO//val2017'
-    parser.add_argument('--video', '-v', type=str)
-    parser.add_argument('--coco_map_test', action='store_true', help='enable coco map test')
-    parser.add_argument('--torch-threads', '-t', default=8, type=int)
+    parser.add_argument('--img_folder', type=str, default='../model', help='img folder path')
 
     args = parser.parse_args()
-
-    torch.set_num_threads(args.torch_threads)
 
     # init model
     model, platform = setup_model(args)
 
-    cap = open_video(args.video)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if args.img_save:
-        frame_queue = mp.Queue()
-        writer = mp.Process(
-            target=worker,
-            args=[frame_queue]
-        )
-        writer.start()
+    file_list = sorted(os.listdir(args.img_folder))
+    img_list = []
+    for path in file_list:
+        if img_check(path):
+            img_list.append(path)
     co_helper = COCO_test_helper(enable_letter_box=True)
 
     # run test
-    for i in range(total_frames):
-        print('infer {}/{}'.format(i+1, total_frames), end='\r')
+    for i in range(len(img_list)):
+        print('infer {}/{}'.format(i+1, len(img_list)), end='\r')
 
-        suc, img_src = cap.read() #cv2.imread(img_path)
-        if img_src is None:
+        img_name = img_list[i]
+        img_path = os.path.join(args.img_folder, img_name)
+        if not os.path.exists(img_path):
+            print("{} is not found", img_name)
             continue
 
-        '''
-        # using for test input dumped by C.demo
-        img_src = np.fromfile('./input_b/demo_c_input_hwc_rgb.txt', dtype=np.uint8).reshape(640,640,3)
-        img_src = cv2.cvtColor(img_src, cv2.COLOR_RGB2BGR)
-        '''
+        img_src = cv2.imread(img_path)
+        if img_src is None:
+            continue
 
         # Due to rga init with (0,0,0), we using pad_color (0,0,0) instead of (114, 114, 114)
         pad_color = (0,0,0)
         img = co_helper.letter_box(im= img_src.copy(), new_shape=(IMG_SIZE[1], IMG_SIZE[0]), pad_color=(0,0,0))
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-        # preprocee if not rknn model
-        if platform in ['pytorch', 'onnx']:
-            input_data = img.transpose((2,0,1))
-            input_data = input_data.reshape(1,*input_data.shape).astype(np.float32)
-            input_data = input_data/255.
-        else:
-            input_data = img
-
-        outputs = model.run([input_data])
+        outputs = model.run([img])
         boxes, classes, scores = post_process(outputs)
 
-        if args.img_show or args.img_save:
+        if args.img_save:
+            print('\n\nIMG: {}'.format(img_name))
             img_p = img_src.copy()
             if boxes is not None:
                 draw(img_p, co_helper.get_real_box(boxes), scores, classes)
 
-            if args.img_save:
-                frame_queue.put(img_p)
-            #     if not os.path.exists('./result'):
-            #         os.mkdir('./result')
-            #     result_path = os.path.join('./result', img_name)
-            #     cv2.imwrite(result_path, img_p)
-            #     print('Detection result save to {}'.format(result_path))
-                        
-            if args.img_show:
-                cv2.imshow("full post process result", img_p)
-                cv2.waitKeyEx(0)
-
-        # record maps
-        if args.coco_map_test is True:
-            if boxes is not None:
-                for i in range(boxes.shape[0]):
-                    co_helper.add_single_record(image_id = int(img_name.split('.')[0]),
-                                                category_id = coco_id_list[int(classes[i])],
-                                                bbox = boxes[i],
-                                                score = round(scores[i], 5).item()
-                                                )
-    
-    frame_queue.put(None)
-
-    # calculate maps
-    if args.coco_map_test is True:
-        pred_json = args.model_path.split('.')[-2]+ '_{}'.format(platform) +'.json'
-        pred_json = pred_json.split('/')[-1]
-        pred_json = os.path.join('./', pred_json)
-        co_helper.export_to_json(pred_json)
-
-        from py_utils.coco_utils import coco_eval_with_json
-        coco_eval_with_json(args.anno_json, pred_json)
+            if not os.path.exists('./result'):
+                os.mkdir('./result')
+            result_path = os.path.join('./result', img_name)
+            cv2.imwrite(result_path, img_p)
+            print('Detection result save to {}'.format(result_path))
 
     # release
     model.release()
