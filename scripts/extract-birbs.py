@@ -5,6 +5,7 @@ import argparse
 from copy import copy
 
 import numpy as np
+import multiprocessing as mp
 
 from rknn.api import RKNN
 
@@ -124,6 +125,15 @@ class COCO_test_helper():
             bbox[:,3] /= self.letter_box_info.h_ratio
             bbox[:,3] = np.clip(bbox[:,3], 0, self.letter_box_info.origin_shape[0])
         return bbox
+
+def open_video(vname):
+
+    cap = cv2.VideoCapture(vname)
+
+    if (cap.isOpened() == False):  
+        raise RuntimeError("Error reading video file")
+
+    return cap
 
 
 def filter_boxes(boxes, box_confidences, box_class_probs):
@@ -279,6 +289,29 @@ def img_check(path):
             return True
     return False
 
+def video_writer_worker(queue, w, h):
+    cap = cv2.VideoWriter(
+        "result/output_video.mp4",
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        10,
+        (w, h)
+    )
+    if not cap.isOpened(): raise RuntimeError(f"Couldn't create video file result/output_video.mp4")
+    nframes = 0
+    while True:
+        res = queue.get()
+        if res is None:
+            break
+        else:
+            frame, bird_detected = res
+            cap.write(frame)
+            nframes += 1
+    cap.release()
+
+    # delete video if too short
+    # if nframes <= minframes + 1*fps:
+    #     os.remove(path)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Process some integers.')
     # basic params
@@ -289,7 +322,7 @@ if __name__ == '__main__':
     parser.add_argument('--img_save', action='store_true', default=False, help='save the result')
 
     # data params
-    parser.add_argument('--img_folder', type=str, default='../model', help='img folder path')
+    parser.add_argument('--video', '-v', type=str, default='0', help='Video to watch. Can be either video device index, e.g. 0, or video file e.g. video.mkv.')
     parser.add_argument('--anchors', type=str, default='../model/anchors_yolov5.txt', help='target to anchor file, only yolov5, yolov7 need this param')
 
     args = parser.parse_args()
@@ -303,47 +336,57 @@ if __name__ == '__main__':
     # init model
     model, platform = setup_model(args)
 
-    file_list = sorted(os.listdir(args.img_folder))
-    img_list = []
-    for path in file_list:
-        if img_check(path):
-            img_list.append(path)
     co_helper = COCO_test_helper()
 
+    # open video
+    cap = open_video(args.video)
+    fps=10.0 # temporary fix
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    print(f"""INPUT VIDEO: {args.video}
+    Resolution: {cap.get(cv2.CAP_PROP_FRAME_HEIGHT)}x{int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}
+    FPS:        {fps}
+OUTPUT DIRECTORY: result/{{originals,triggers}}
+DETECTION MODEL: {args.model_path}
+
+Beginning processing...
+""")
+    
+    # initiate video writer
+    frame_queue = mp.Queue()
+    worker = mp.Process(
+        target=video_writer_worker,
+        args=(frame_queue, w, h)
+    )
+    worker.start()
+
     # run test
-    for i in range(len(img_list)):
-        print('infer {}/{}'.format(i+1, len(img_list)), end='\r')
+    suc = True
+    iframe = 0
+    while suc and iframe < total_frames:
+        print('infer {}/{}'.format(iframe, total_frames), end='\r')
 
-        img_name = img_list[i]
-        img_path = os.path.join(args.img_folder, img_name)
-        if not os.path.exists(img_path):
-            print("{} is not found", img_name)
-            continue
-
-        img_src = cv2.imread(img_path)
-        if img_src is None:
-            continue
+        suc, frame = cap.read()
 
         # Due to rga init with (0,0,0), we using pad_color (0,0,0) instead of (114, 114, 114)
         pad_color = (0,0,0)
-        img = co_helper.letter_box(im= img_src.copy(), new_shape=(IMG_SIZE[1], IMG_SIZE[0]), pad_color=(0,0,0))
+        img = co_helper.letter_box(im= frame.copy(), new_shape=(IMG_SIZE[1], IMG_SIZE[0]), pad_color=(0,0,0))
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         outputs = model.run([img])
         boxes, classes, scores = post_process(outputs, anchors)
 
-        if args.img_save:
-            print('\n\nIMG: {}'.format(img_name))
-            img_p = img_src.copy()
-            if boxes is not None:
-                draw(img_p, co_helper.get_real_box(boxes), scores, classes)
+        img_p = frame.copy()
+        if boxes is not None:
+            draw(img_p, co_helper.get_real_box(boxes), scores, classes)
 
-            if args.img_save:
-                if not os.path.exists('./result'):
-                    os.mkdir('./result')
-                result_path = os.path.join('./result', img_name)
-                cv2.imwrite(result_path, img_p)
-                print('Detection result save to {}'.format(result_path))
+        frame_queue.put((img_p, boxes is not None))
+
+        iframe +=1
+    
+    frame_queue.put(None)
 
     # release
     model.release()
+    cap.release()
