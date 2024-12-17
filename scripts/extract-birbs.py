@@ -13,7 +13,7 @@ from py_utils.coco_utils import COCO_test_helper
 import numpy as np
 
 
-OBJ_THRESH = 0.6
+OBJ_THRESH = 0.45
 NMS_THRESH = 0.45
 
 # The follew two param is for map test
@@ -39,8 +39,6 @@ def filter_boxes(boxes, box_confidences, box_class_probs):
     """Filter boxes with object threshold.
     """
     box_confidences = box_confidences.reshape(-1)
-    candidate, class_num = box_class_probs.shape
-
     class_max_score = np.max(box_class_probs, axis=-1)
     classes = np.argmax(box_class_probs, axis=-1)
 
@@ -85,21 +83,8 @@ def nms_boxes(boxes, scores):
     keep = np.array(keep)
     return keep
 
-def dfl(position):
-    # Distribution Focal Loss (DFL)
-    import torch
-    x = torch.tensor(position)
-    n,c,h,w = x.shape
-    p_num = 4
-    mc = c//p_num
-    y = x.reshape(n,p_num,mc,h,w)
-    y = y.softmax(2)
-    acc_metrix = torch.tensor(range(mc)).float().reshape(1,1,mc,1,1)
-    y = (y*acc_metrix).sum(2)
-    return y.numpy()
 
-
-def box_process(position):
+def box_process(position, anchors):
     grid_h, grid_w = position.shape[2:4]
     col, row = np.meshgrid(np.arange(0, grid_w), np.arange(0, grid_h))
     col = col.reshape(1, 1, grid_h, grid_w)
@@ -107,22 +92,35 @@ def box_process(position):
     grid = np.concatenate((col, row), axis=1)
     stride = np.array([IMG_SIZE[1]//grid_h, IMG_SIZE[0]//grid_w]).reshape(1,2,1,1)
 
-    position = dfl(position)
-    box_xy  = grid +0.5 -position[:,0:2,:,:]
-    box_xy2 = grid +0.5 +position[:,2:4,:,:]
-    xyxy = np.concatenate((box_xy*stride, box_xy2*stride), axis=1)
+    col = col.repeat(len(anchors), axis=0)
+    row = row.repeat(len(anchors), axis=0)
+    anchors = np.array(anchors)
+    anchors = anchors.reshape(*anchors.shape, 1, 1)
+
+    box_xy = position[:,:2,:,:]*2 - 0.5
+    box_wh = pow(position[:,2:4,:,:]*2, 2) * anchors
+
+    box_xy += grid
+    box_xy *= stride
+    box = np.concatenate((box_xy, box_wh), axis=1)
+
+    # Convert [c_x, c_y, w, h] to [x1, y1, x2, y2]
+    xyxy = np.copy(box)
+    xyxy[:, 0, :, :] = box[:, 0, :, :] - box[:, 2, :, :]/ 2  # top left x
+    xyxy[:, 1, :, :] = box[:, 1, :, :] - box[:, 3, :, :]/ 2  # top left y
+    xyxy[:, 2, :, :] = box[:, 0, :, :] + box[:, 2, :, :]/ 2  # bottom right x
+    xyxy[:, 3, :, :] = box[:, 1, :, :] + box[:, 3, :, :]/ 2  # bottom right y
 
     return xyxy
 
-def post_process(input_data):
+def post_process(input_data, anchors):
     boxes, scores, classes_conf = [], [], []
-    defualt_branch=3
-    pair_per_branch = len(input_data)//defualt_branch
-    # Python 忽略 score_sum 输出
-    for i in range(defualt_branch):
-        boxes.append(box_process(input_data[pair_per_branch*i]))
-        classes_conf.append(input_data[pair_per_branch*i+1])
-        scores.append(np.ones_like(input_data[pair_per_branch*i+1][:,:1,:,:], dtype=np.float32))
+    # 1*255*h*w -> 3*85*h*w
+    input_data = [_in.reshape([len(anchors[0]),-1]+list(_in.shape[-2:])) for _in in input_data]
+    for i in range(len(input_data)):
+        boxes.append(box_process(input_data[i][:,:4,:,:], anchors[i]))
+        scores.append(input_data[i][:,4:5,:,:])
+        classes_conf.append(input_data[i][:,5:,:,:])
 
     def sp_flatten(_in):
         ch = _in.shape[1]
@@ -142,6 +140,7 @@ def post_process(input_data):
 
     # nms
     nboxes, nclasses, nscores = [], [], []
+
     for c in set(classes):
         inds = np.where(classes == c)
         b = boxes[inds]
@@ -178,8 +177,9 @@ def setup_model(args):
         platform = 'rknn'
         from py_utils.rknn_executor import RKNN_model_container 
         model = RKNN_model_container(args.model_path, args.target, args.device_id)
+        model = ONNX_model_container(args.model_path)
     else:
-        assert False, "{} is not rknn model".format(model_path)
+        assert False, "{} is not rknn/pytorch/onnx model".format(model_path)
     print('Model-{} is {} model, starting val'.format(model_path, platform))
     return model, platform
 
@@ -201,9 +201,16 @@ if __name__ == '__main__':
 
     # data params
     parser.add_argument('--img_folder', type=str, default='../model', help='img folder path')
+    parser.add_argument('--anchors', type=str, default='../model/anchors_yolov5.txt', help='target to anchor file, only yolov5, yolov7 need this param')
 
     args = parser.parse_args()
 
+    # load anchor
+    with open(args.anchors, 'r') as f:
+        values = [float(_v) for _v in f.readlines()]
+        anchors = np.array(values).reshape(3,-1,2).tolist()
+    print("use anchors from '{}', which is {}".format(args.anchors, anchors))
+    
     # init model
     model, platform = setup_model(args)
 
@@ -234,19 +241,20 @@ if __name__ == '__main__':
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         outputs = model.run([img])
-        boxes, classes, scores = post_process(outputs)
+        boxes, classes, scores = post_process(outputs, anchors)
 
-        if args.img_save:
+        if args.img_show or args.img_save:
             print('\n\nIMG: {}'.format(img_name))
             img_p = img_src.copy()
             if boxes is not None:
                 draw(img_p, co_helper.get_real_box(boxes), scores, classes)
 
-            if not os.path.exists('./result'):
-                os.mkdir('./result')
-            result_path = os.path.join('./result', img_name)
-            cv2.imwrite(result_path, img_p)
-            print('Detection result save to {}'.format(result_path))
+            if args.img_save:
+                if not os.path.exists('./result'):
+                    os.mkdir('./result')
+                result_path = os.path.join('./result', img_name)
+                cv2.imwrite(result_path, img_p)
+                print('Detection result save to {}'.format(result_path))
 
     # release
     model.release()
