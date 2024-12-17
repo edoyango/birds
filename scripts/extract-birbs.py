@@ -4,13 +4,9 @@ import sys
 import argparse
 from copy import copy
 
-# add path
-realpath = os.path.abspath(__file__)
-_sep = os.path.sep
-realpath = realpath.split(_sep)
-sys.path.append(os.path.join(realpath[0]+_sep, *realpath[1:realpath.index('rknn_model_zoo')+1]))
-
 import numpy as np
+
+from rknn.api import RKNN
 
 
 OBJ_THRESH = 0.45
@@ -33,6 +29,46 @@ CLASSES = ("person", "bicycle", "car","motorbike ","aeroplane ","bus ","train","
 coco_id_list = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 31, 32, 33, 34,
          35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
          64, 65, 67, 70, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 84, 85, 86, 87, 88, 89, 90]
+
+class RKNN_model_container():
+    def __init__(self, model_path, target=None, device_id=None) -> None:
+        rknn = RKNN()
+
+        # Direct Load RKNN Model
+        rknn.load_rknn(model_path)
+
+        print('--> Init runtime environment')
+        if target==None:
+            ret = rknn.init_runtime()
+        else:
+            ret = rknn.init_runtime(target=target, device_id=device_id)
+        if ret != 0:
+            print('Init runtime environment failed')
+            exit(ret)
+        print('done')
+        
+        self.rknn = rknn
+
+    # def __del__(self):
+    #     self.release()
+
+    def run(self, inputs):
+        if self.rknn is None:
+            print("ERROR: rknn has been released")
+            return []
+
+        if isinstance(inputs, list) or isinstance(inputs, tuple):
+            pass
+        else:
+            inputs = [inputs]
+
+        result = self.rknn.inference(inputs=inputs)
+    
+        return result
+
+    def release(self):
+        self.rknn.release()
+        self.rknn = None
 
 class Letter_Box_Info():
     def __init__(self, shape, new_shape, w_ratio, h_ratio, dw, dh, pad_color) -> None:
@@ -245,8 +281,7 @@ def draw(image, boxes, scores, classes):
 def setup_model(args):
     model_path = args.model_path
     if model_path.endswith('.rknn'):
-        platform = 'rknn'
-        from py_utils.rknn_executor import RKNN_model_container 
+        platform = 'rknn' 
         model = RKNN_model_container(args.model_path, args.target, args.device_id)
     else:
         assert False, "{} is not rknn/pytorch/onnx model".format(model_path)
