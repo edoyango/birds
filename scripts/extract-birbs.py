@@ -83,15 +83,6 @@ class COCO_test_helper():
         else:
             return im
 
-    def direct_resize(self, im, new_shape, info_need=False):
-        shape = im.shape[:2]
-        h_ratio = new_shape[0]/ shape[0]
-        w_ratio = new_shape[1]/ shape[1]
-        if self.enable_ltter_box is True:
-            self.letter_box_info_list.append(Letter_Box_Info(shape, new_shape, w_ratio, h_ratio, 0, 0, (0,0,0)))
-        im = cv2.resize(im, (new_shape[1], new_shape[0]))
-        return im
-
     def get_real_box(self, box, in_format='xyxy'):
         bbox = copy(box)
         if self.enable_ltter_box == True:
@@ -113,74 +104,6 @@ class COCO_test_helper():
                 bbox[:,3] /= self.letter_box_info_list[-1].h_ratio
                 bbox[:,3] = np.clip(bbox[:,3], 0, self.letter_box_info_list[-1].origin_shape[0])
         return bbox
-
-    def get_real_seg(self, seg):
-        #! fix side effect
-        dh = int(self.letter_box_info_list[-1].dh)
-        dw = int(self.letter_box_info_list[-1].dw)
-        origin_shape = self.letter_box_info_list[-1].origin_shape
-        new_shape = self.letter_box_info_list[-1].new_shape
-        if (dh == 0) and (dw == 0) and origin_shape == new_shape:
-            return seg
-        elif dh == 0 and dw != 0:
-            seg = seg[:, :, dw:-dw] # a[0:-0] = []
-        elif dw == 0 and dh != 0 : 
-            seg = seg[:, dh:-dh, :]
-        seg = np.where(seg, 1, 0).astype(np.uint8).transpose(1,2,0)
-        seg = cv2.resize(seg, (origin_shape[1], origin_shape[0]), interpolation=cv2.INTER_LINEAR)
-        if len(seg.shape) < 3:
-            return seg[None,:,:]
-        else:
-            return seg.transpose(2,0,1)
-
-    def add_single_record(self, image_id, category_id, bbox, score, in_format='xyxy', pred_masks = None):
-        if self.enable_ltter_box == True:
-        # unletter_box result
-            if in_format=='xyxy':
-                bbox[0] -= self.letter_box_info_list[-1].dw
-                bbox[0] /= self.letter_box_info_list[-1].w_ratio
-
-                bbox[1] -= self.letter_box_info_list[-1].dh
-                bbox[1] /= self.letter_box_info_list[-1].h_ratio
-
-                bbox[2] -= self.letter_box_info_list[-1].dw
-                bbox[2] /= self.letter_box_info_list[-1].w_ratio
-
-                bbox[3] -= self.letter_box_info_list[-1].dh
-                bbox[3] /= self.letter_box_info_list[-1].h_ratio
-                # bbox = [value/self.letter_box_info_list[-1].ratio for value in bbox]
-
-        if in_format=='xyxy':
-        # change xyxy to xywh
-            bbox[2] = bbox[2] - bbox[0]
-            bbox[3] = bbox[3] - bbox[1]
-        else:
-            assert False, "now only support xyxy format, please add code to support others format"
-        
-        def single_encode(x):
-            from pycocotools.mask import encode
-            rle = encode(np.asarray(x[:, :, None], order="F", dtype="uint8"))[0]
-            rle["counts"] = rle["counts"].decode("utf-8")
-            return rle
-
-        if pred_masks is None:
-            self.record_list.append({"image_id": image_id,
-                                    "category_id": category_id,
-                                    "bbox":[round(x, 3) for x in bbox],
-                                    'score': round(score, 5),
-                                    })
-        else:
-            rles = single_encode(pred_masks)
-            self.record_list.append({"image_id": image_id,
-                                    "category_id": category_id,
-                                    "bbox":[round(x, 3) for x in bbox],
-                                    'score': round(score, 5),
-                                    'segmentation': rles,
-                                    })
-    
-    def export_to_json(self, path):
-        with open(path, 'w') as f:
-            json.dump(self.record_list, f)
 
 
 def filter_boxes(boxes, box_confidences, box_class_probs):
