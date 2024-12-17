@@ -3,6 +3,7 @@ import cv2
 import sys
 import argparse
 from copy import copy
+import csv
 
 import numpy as np
 import multiprocessing as mp
@@ -289,6 +290,18 @@ def img_check(path):
             return True
     return False
 
+def count_detections(classes):
+
+    counts = {}
+    for i in classes:
+        ii = int(i)
+        if counts.get(ii):
+            counts[ii] += 1
+        else:
+            counts[ii] = 1
+    
+    return {CLASSES[k]: v for k, v in counts.items()}
+
 def video_writer_worker(queue, w, h):
     cap = cv2.VideoWriter(
         "result/output_video.mp4",
@@ -296,6 +309,7 @@ def video_writer_worker(queue, w, h):
         10,
         (w, h)
     )
+    total_class_count = {c: 0 for c in CLASSES}
     if not cap.isOpened(): raise RuntimeError(f"Couldn't create video file result/output_video.mp4")
     nframes = 0
     while True:
@@ -303,9 +317,19 @@ def video_writer_worker(queue, w, h):
         if res is None:
             break
         else:
-            frame, bird_detected = res
+            frame, classes = res
             cap.write(frame)
+            classes_count = {} if classes is None else count_detections(classes)
             nframes += 1
+        for k, v in classes_count.items():
+            total_class_count[k] += v
+    total_instances = sum([v for v in total_class_count.values()])
+    header = ["reference video path", "start time", "original video path", "original first frame path", "trigger video path", "trigger first frame path", "nframes", "average ninstance per frame"]
+    row = ["result/output_video.mp4", "00-00-00", "test_original_video_path", "test_original_first_frame_path", "test_trigger_video_path", "test_trigger_first_frame_path", str(nframes), str(total_instances/nframes)]
+    with open("result/meta.csv", "a") as f:
+        csvwriter = csv.writer(f)
+        csvwriter.writerow(header)  
+        csvwriter.writerow(row)
     cap.release()
 
     # delete video if too short
@@ -344,11 +368,13 @@ if __name__ == '__main__':
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    wait_limit = 50
     print(f"""INPUT VIDEO: {args.video}
     Resolution: {cap.get(cv2.CAP_PROP_FRAME_HEIGHT)}x{int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}
     FPS:        {fps}
 OUTPUT DIRECTORY: result/{{originals,triggers}}
 DETECTION MODEL: {args.model_path}
+WAIT LIMIT: {wait_limit} frames
 
 Beginning processing...
 """)
@@ -369,19 +395,26 @@ Beginning processing...
 
         suc, frame = cap.read()
 
-        # Due to rga init with (0,0,0), we using pad_color (0,0,0) instead of (114, 114, 114)
+        # letterbox video as per training
         pad_color = (0,0,0)
         img = co_helper.letter_box(im= frame.copy(), new_shape=(IMG_SIZE[1], IMG_SIZE[0]), pad_color=(0,0,0))
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
+        # inference
         outputs = model.run([img])
         boxes, classes, scores = post_process(outputs, anchors)
 
+        # draw boxes on top of frame
         img_p = frame.copy()
         if boxes is not None:
             draw(img_p, co_helper.get_real_box(boxes), scores, classes)
 
-        frame_queue.put((img_p, boxes is not None))
+        # send frame and classes to video worker
+        frame_queue.put((img_p, classes))
+
+        # check video writer worker is still alive
+        if worker.exitcode:
+            raise RuntimeError(f"Worker has died with error code {worker.exitcode}")
 
         iframe +=1
     
