@@ -81,13 +81,9 @@ class Letter_Box_Info():
         self.pad_color = pad_color
 
 class COCO_test_helper():
-    def __init__(self, enable_letter_box = False) -> None:
+    def __init__(self) -> None:
         self.record_list = []
-        self.enable_ltter_box = enable_letter_box
-        if self.enable_ltter_box is True:
-            self.letter_box_info_list = []
-        else:
-            self.letter_box_info_list = None
+        self.letter_box_info = None
 
     def letter_box(self, im, new_shape, pad_color=(0,0,0), info_need=False):
         # Resize and pad image while meeting stride-multiple constraints
@@ -112,8 +108,7 @@ class COCO_test_helper():
         left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
         im = cv2.copyMakeBorder(im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=pad_color)  # add border
         
-        if self.enable_ltter_box is True:
-            self.letter_box_info_list.append(Letter_Box_Info(shape, new_shape, ratio, ratio, dw, dh, pad_color))
+        self.letter_box_info = Letter_Box_Info(shape, new_shape, ratio, ratio, dw, dh, pad_color)
         if info_need is True:
             return im, ratio, (dw, dh)
         else:
@@ -121,24 +116,23 @@ class COCO_test_helper():
 
     def get_real_box(self, box, in_format='xyxy'):
         bbox = copy(box)
-        if self.enable_ltter_box == True:
         # unletter_box result
-            if in_format=='xyxy':
-                bbox[:,0] -= self.letter_box_info_list[-1].dw
-                bbox[:,0] /= self.letter_box_info_list[-1].w_ratio
-                bbox[:,0] = np.clip(bbox[:,0], 0, self.letter_box_info_list[-1].origin_shape[1])
+        if in_format=='xyxy':
+            bbox[:,0] -= self.letter_box_info.dw
+            bbox[:,0] /= self.letter_box_info.w_ratio
+            bbox[:,0] = np.clip(bbox[:,0], 0, self.letter_box_info.origin_shape[1])
 
-                bbox[:,1] -= self.letter_box_info_list[-1].dh
-                bbox[:,1] /= self.letter_box_info_list[-1].h_ratio
-                bbox[:,1] = np.clip(bbox[:,1], 0, self.letter_box_info_list[-1].origin_shape[0])
+            bbox[:,1] -= self.letter_box_info.dh
+            bbox[:,1] /= self.letter_box_info.h_ratio
+            bbox[:,1] = np.clip(bbox[:,1], 0, self.letter_box_info.origin_shape[0])
 
-                bbox[:,2] -= self.letter_box_info_list[-1].dw
-                bbox[:,2] /= self.letter_box_info_list[-1].w_ratio
-                bbox[:,2] = np.clip(bbox[:,2], 0, self.letter_box_info_list[-1].origin_shape[1])
+            bbox[:,2] -= self.letter_box_info.dw
+            bbox[:,2] /= self.letter_box_info.w_ratio
+            bbox[:,2] = np.clip(bbox[:,2], 0, self.letter_box_info.origin_shape[1])
 
-                bbox[:,3] -= self.letter_box_info_list[-1].dh
-                bbox[:,3] /= self.letter_box_info_list[-1].h_ratio
-                bbox[:,3] = np.clip(bbox[:,3], 0, self.letter_box_info_list[-1].origin_shape[0])
+            bbox[:,3] -= self.letter_box_info.dh
+            bbox[:,3] /= self.letter_box_info.h_ratio
+            bbox[:,3] = np.clip(bbox[:,3], 0, self.letter_box_info.origin_shape[0])
         return bbox
 
 
@@ -324,7 +318,7 @@ if __name__ == '__main__':
     for path in file_list:
         if img_check(path):
             img_list.append(path)
-    co_helper = COCO_test_helper(enable_letter_box=True)
+    co_helper = COCO_test_helper()
 
     # run test
     for i in range(len(img_list)):
