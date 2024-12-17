@@ -4,6 +4,8 @@ import sys
 import argparse
 from copy import copy
 import csv
+import datetime
+from pathlib import Path
 
 import numpy as np
 import multiprocessing as mp
@@ -302,34 +304,124 @@ def count_detections(classes):
     
     return {CLASSES[k]: v for k, v in counts.items()}
 
-def video_writer_worker(queue, w, h, wait_limit):
-    cap = cv2.VideoWriter(
-        "result/output_video.mp4",
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        10,
-        (w, h)
-    )
-    total_class_count = {c: 0 for c in CLASSES}
-    if not cap.isOpened(): raise RuntimeError(f"Couldn't create video file result/output_video.mp4")
-    nframes = 0
+class detected_bird_video:
+    def __init__(self, output_path, fps, width, height, minframes, prefix):
+
+        # define video name
+        # assumes there is <1s difference between when the frame is captured
+        # and video is opened by worker
+        self.vid_name = f"{prefix}{datetime.datetime.now().strftime('%Y-%m-%d_%H-%H-%S')}"
+
+        # define and create output directories
+        self.trigger_dir = Path(output_path) / "triggers"
+        self.trigger_firstframes_dir = self.trigger_dir / "first_frames"
+        self.original_dir = Path(output_path) / "originals"
+        self.original_firstframes_dir = self.original_dir / "first_frames"
+        self.trigger_firstframes_dir.mkdir(parents=True, exist_ok=True)
+        self.original_firstframes_dir.mkdir(parents=True, exist_ok=True)
+
+        # save video properties
+        self.fps = fps
+        self.width = width
+        self.height = height
+        self.minframes = minframes
+        
+        # paths
+        self.trigger_vid_path = self.trigger_dir / f"trigger-{self.vid_name}.mp4"
+        self.original_vid_path = self.original_dir / f"original-{self.vid_name}.mp4"
+        self.trigger_firstframe_path = self.trigger_firstframes_dir / f"trigger-{self.vid_name}.jpg"
+        self.original_firstframe_path = self.original_firstframes_dir / f"original-{self.vid_name}.jpg"
+        self.meta_csv = Path(output_path) / "meta.csv" # stores all video metadata
+
+        # open video
+        self.cap_trigger = cv2.VideoWriter(
+            self.trigger_vid_path,
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            self.fps,
+            (self.width, self.height)
+        )
+        self.cap_original = cv2.VideoWriter(
+            self.original_vid_path,
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            self.fps,
+            (self.width, self.height)
+        )
+
+        # initialise output video metadata
+        self.nframes = 0
+        self.total_instances = 0
+        self.total_class_count = {c: 0 for c in CLASSES}
+        self.opened = self.cap_trigger.isOpened() and self.cap_original.isOpened()
+        if not self.opened:
+            raise RuntimeError("Problem opening trigger or original video")
+    
+    def write(self, trigger_frame, original_frame, classes):
+
+        if self.nframes == 0:
+            cv2.imwrite(self.trigger_firstframe_path, trigger_frame)
+            cv2.imwrite(self.original_firstframe_path, original_frame)
+        
+        self.cap_trigger.write(trigger_frame)
+        self.cap_original.write(original_frame)
+
+        self.nframes += 1
+
+        classes_count = {} if classes is None else count_detections(classes)
+        for k, v in classes_count.items():
+            self.total_class_count[k] += v
+            self.total_instances += v
+    
+    def release(self):
+
+        # append to metadata csv if it exists
+        row = [
+            "N/A",
+            "N/A",
+            self.original_vid_path,
+            self.original_firstframe_path,
+            self.trigger_vid_path,
+            self.trigger_firstframe_path,
+            self.nframes,
+            self.total_instances/self.nframes
+        ]
+        header = ["reference video path", "start time", "original video path", "original first frame path", "trigger video path", "trigger first frame path", "nframes", "average ninstance per frame"]
+        for k, v in self.total_class_count.items():
+            header.append(k)
+            row.append(str(v))
+        if self.meta_csv.exists() and self.meta_csv.is_file():
+            with self.meta_csv.open(mode="a") as f:
+                csvwriter = csv.writer(f)
+                csvwriter.writerow(row)
+        else:
+            with self.meta_csv.open(mode="w") as f:
+                csvwriter = csv.writer(f)
+                
+                csvwriter.writerow(header)
+                csvwriter.writerow(row)
+        
+        # close caps
+        self.cap_trigger.release()
+        self.cap_original.release()
+
+        self.opened = False
+    
+    def isOpened(self):
+        return self.opened
+        
+
+def video_writer_worker(queue, w, h, wait_limit, output_path):
+
+    # open output video
+    output_video = detected_bird_video(output_path, 10, w, h, 50, "test-")
+
+    # start reading frames from master
     while True:
         res = queue.get()
         if res is None:
             break
         else:
-            cap.write(res["drawn image"])
-            classes_count = {} if res["classes"] is None else count_detections(res["classes"])
-            nframes += 1
-        for k, v in classes_count.items():
-            total_class_count[k] += v
-    total_instances = sum([v for v in total_class_count.values()])
-    header = ["reference video path", "start time", "original video path", "original first frame path", "trigger video path", "trigger first frame path", "nframes", "average ninstance per frame"]
-    row = ["result/output_video.mp4", "00-00-00", "test_original_video_path", "test_original_first_frame_path", "test_trigger_video_path", "test_trigger_first_frame_path", str(nframes), str(total_instances/nframes)]
-    with open("result/meta.csv", "a") as f:
-        csvwriter = csv.writer(f)
-        csvwriter.writerow(header)  
-        csvwriter.writerow(row)
-    cap.release()
+            output_video.write(res["drawn image"], res["original image"], res["classes"])
+    output_video.release()
 
     # delete video if too short
     # if nframes <= minframes + 1*fps:
@@ -382,7 +474,7 @@ Beginning processing...
     frame_queue = mp.Queue()
     worker = mp.Process(
         target=video_writer_worker,
-        args=(frame_queue, w, h, wait_limit)
+        args=(frame_queue, w, h, wait_limit, "result")
     )
     worker.start()
 
@@ -408,6 +500,11 @@ Beginning processing...
         if boxes is not None:
             draw(img_p, co_helper.get_real_box(boxes), scores, classes)
 
+        # check video writer worker is still alive
+        if worker.exitcode:
+            worker.close()
+            raise RuntimeError(f"Worker has died with error code {worker.exitcode}")
+        
         # send frame and classes to video worker
         frame_queue.put(
             {"classes": classes,
@@ -415,11 +512,6 @@ Beginning processing...
              "original image": frame.copy(),
             }
         )
-
-        # check video writer worker is still alive
-        if worker.exitcode:
-            worker.close()
-            raise RuntimeError(f"Worker has died with error code {worker.exitcode}")
 
         iframe +=1
     
