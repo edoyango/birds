@@ -270,7 +270,6 @@ def post_process(input_data, anchors):
 def draw(image, boxes, scores, classes):
     for box, score, cl in zip(boxes, scores, classes):
         top, left, right, bottom = [int(_b) for _b in box]
-        print("%s @ (%d %d %d %d) %.3f" % (CLASSES[cl], top, left, right, bottom, score))
         cv2.rectangle(image, (top, left), (right, bottom), (255, 0, 0), 2)
         cv2.putText(image, '{0} {1:.2f}'.format(CLASSES[cl], score),
                     (top, left - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
@@ -356,6 +355,9 @@ class detected_bird_video:
             raise RuntimeError("Problem opening trigger or original video")
     
     def write(self, trigger_frame, original_frame, classes):
+        """
+        Write frames to trigger and original videos and record number of classes detected.
+        """
 
         if self.nframes == 0:
             cv2.imwrite(self.trigger_firstframe_path, trigger_frame)
@@ -372,8 +374,11 @@ class detected_bird_video:
             self.total_instances += v
     
     def release(self):
+        """
+        Release output video captures, add video metadata to meta.csv, and delete output videos if too short.
+        """
 
-        # append to metadata csv if it exists
+        # initialise row and header
         row = [
             "N/A",
             "N/A",
@@ -384,10 +389,22 @@ class detected_bird_video:
             self.nframes,
             self.total_instances/self.nframes
         ]
-        header = ["reference video path", "start time", "original video path", "original first frame path", "trigger video path", "trigger first frame path", "nframes", "average ninstance per frame"]
+        header = ["reference video path", 
+                  "start time", 
+                  "original video path", 
+                  "original first frame path", 
+                  "trigger video path", 
+                  "trigger first frame path", 
+                  "nframes", 
+                  "average ninstance per frame"
+                 ]
+        
+        # add class names and data to header/row
         for k, v in self.total_class_count.items():
             header.append(k)
             row.append(str(v))
+
+        # append to meta.csv if it exists, otherwise create a new one with headers
         if self.meta_csv.exists() and self.meta_csv.is_file():
             with self.meta_csv.open(mode="a") as f:
                 csvwriter = csv.writer(f)
@@ -395,7 +412,6 @@ class detected_bird_video:
         else:
             with self.meta_csv.open(mode="w") as f:
                 csvwriter = csv.writer(f)
-                
                 csvwriter.writerow(header)
                 csvwriter.writerow(row)
         
@@ -403,11 +419,19 @@ class detected_bird_video:
         self.cap_trigger.release()
         self.cap_original.release()
 
+        # remove videos if too short
+        if self.nframes < self.minframes:
+            self.trigger_vid_path.unlink(missing_ok=True)
+            self.original_vid_path.unlink(missing_ok=True)
+
+        # tag as closed
         self.opened = False
     
     def isOpened(self):
+        """
+        Helper function to indicate if videos are open.
+        """
         return self.opened
-        
 
 def video_writer_worker(queue, w, h, wait_limit, output_path):
 
@@ -423,26 +447,23 @@ def video_writer_worker(queue, w, h, wait_limit, output_path):
             output_video.write(res["drawn image"], res["original image"], res["classes"])
     output_video.release()
 
-    # delete video if too short
-    # if nframes <= minframes + 1*fps:
-    #     os.remove(path)
-
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Process some integers.')
+    parser = argparse.ArgumentParser(description='Detect birds from a video feed.')
     # basic params
     parser.add_argument('--model_path', type=str, required= True, help='model path, could be .pt or .rknn file')
     parser.add_argument('--target', type=str, default='rk3566', help='target RKNPU platform')
     parser.add_argument('--device_id', type=str, default=None, help='device id')
-    
-    parser.add_argument('--img_save', action='store_true', default=False, help='save the result')
 
     # data params
     parser.add_argument('--video', '-v', type=str, default='0', help='Video to watch. Can be either video device index, e.g. 0, or video file e.g. video.mkv.')
     parser.add_argument('--anchors', type=str, default='../model/anchors_yolov5.txt', help='target to anchor file, only yolov5, yolov7 need this param')
 
+    # output
+    parser.add_argument("--output-dir", "-o", type=Path, default=Path("."), help="Output directory to save inference results.")
+
     args = parser.parse_args()
 
-    # load anchor
+    # load anchors
     with open(args.anchors, 'r') as f:
         values = [float(_v) for _v in f.readlines()]
         anchors = np.array(values).reshape(3,-1,2).tolist()
@@ -451,9 +472,10 @@ if __name__ == '__main__':
     # init model
     model, platform = setup_model(args)
 
+    # create letterboxing class
     co_helper = COCO_test_helper()
 
-    # open video
+    # open video and define some metadata
     cap = open_video(args.video)
     fps=10.0 # temporary fix
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -474,17 +496,20 @@ Beginning processing...
     frame_queue = mp.Queue()
     worker = mp.Process(
         target=video_writer_worker,
-        args=(frame_queue, w, h, wait_limit, "result")
+        args=(frame_queue, w, h, wait_limit, args.output_dir)
     )
     worker.start()
 
-    # run test
+    # begin reading
     suc = True
     iframe = 0
     while suc and iframe < total_frames:
-        print('infer {}/{}'.format(iframe, total_frames), end='\r')
 
+        # read frame from input feed
         suc, frame = cap.read()
+
+        if not suc:
+            raise("Error reading frame from input feed.")
 
         # letterbox video as per training
         pad_color = (0,0,0)
@@ -495,7 +520,10 @@ Beginning processing...
         outputs = model.run([img])
         boxes, classes, scores = post_process(outputs, anchors)
 
-        # draw boxes on top of frame
+        # print number of detections to terminal
+        print(f"frame {iframe} {0 if classes is None else len(classes)} birds", end="\r")
+
+        # draw boxes on top of original frame
         img_p = frame.copy()
         if boxes is not None:
             draw(img_p, co_helper.get_real_box(boxes), scores, classes)
@@ -515,8 +543,9 @@ Beginning processing...
 
         iframe +=1
     
+    # send signal to end video writeing
     frame_queue.put(None)
 
-    # release
+    # release model and capture
     model.release()
     cap.release()
