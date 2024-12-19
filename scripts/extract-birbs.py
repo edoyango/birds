@@ -303,7 +303,7 @@ Beginning processing...
         # send frame and classes to video worker
         frame_queue.put(
             {"classes": inf_res.classes.copy() if inf_res.classes is not None else None,
-             "drawn image": inf_res.draw(CLASSES).copy(),
+             "drawn image": inf_res.draw(CLASSES, conf=False).copy(),
              "original image": frame.copy(),
             }
         )

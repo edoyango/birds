@@ -3,6 +3,24 @@ import cv2
 from copy import copy
 from rknn.api import RKNN
 
+# a mostly random collection of colours
+CLASS_COLOURS = (
+    (154, 64, 128),
+    (169, 249, 117),
+    (244, 86, 228),
+    (15, 16, 210),
+    (108, 184, 191),
+    (221, 112, 37),
+    (152, 107, 164),
+    (255, 0, 0),
+    (0, 0, 255),
+    (80, 130, 185),
+    (43, 178, 17),
+    (252, 143, 62),
+    (208, 23, 73),
+    (255, 255, 0)
+)
+
 class RKNN_model():
     def __init__(self, model_path, target=None, device_id=None) -> None:
 
@@ -196,14 +214,18 @@ class inference_result:
         self.scores = scores
         self.img = img.copy()
 
-    def draw(self, model_classes):
+    def draw(self, model_classes, conf=True):
         img_copy = self.img.copy()
         if self.boxes is not None:
-            for box, score, cl in zip(self.boxes, self.scores, self.classes):
+            for i, (box, score, cl) in enumerate(zip(self.boxes, self.scores, self.classes)):
                 top, left, right, bottom = [int(_b) for _b in box]
-                cv2.rectangle(img_copy, (top, left), (right, bottom), (255, 0, 0), 2)
-                cv2.putText(img_copy, '{0} {1:.2f}'.format(model_classes[cl], score),
-                            (top, left - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                cv2.rectangle(img_copy, (top, left), (right, bottom), CLASS_COLOURS[i], 2)
+                if conf:
+                    cv2.putText(img_copy, '{0} {1:.2f}'.format(model_classes[cl], score),
+                                (top, left - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, CLASS_COLOURS[i], 2)
+                else:
+                    cv2.putText(img_copy, model_classes[cl], (top, left-6),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, CLASS_COLOURS[i], 2)
         return img_copy
 
 class Letter_Box_Info():
