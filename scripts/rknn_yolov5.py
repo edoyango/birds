@@ -188,11 +188,14 @@ def filter_boxes(boxes, box_confidences, box_class_probs, obj_thresh=0.5):
     return boxes, classes, scores
 
 def draw(image, boxes, scores, classes, model_classes):
-    for box, score, cl in zip(boxes, scores, classes):
-        top, left, right, bottom = [int(_b) for _b in box]
-        cv2.rectangle(image, (top, left), (right, bottom), (255, 0, 0), 2)
-        cv2.putText(image, '{0} {1:.2f}'.format(model_classes[cl], score),
-                    (top, left - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    img_copy = image.copy()
+    if boxes is not None:
+        for box, score, cl in zip(boxes, scores, classes):
+            top, left, right, bottom = [int(_b) for _b in box]
+            cv2.rectangle(img_copy, (top, left), (right, bottom), (255, 0, 0), 2)
+            cv2.putText(img_copy, '{0} {1:.2f}'.format(model_classes[cl], score),
+                        (top, left - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    return img_copy
 
 class Letter_Box_Info():
     def __init__(self, shape, new_shape, w_ratio, h_ratio, dw, dh, pad_color) -> None:

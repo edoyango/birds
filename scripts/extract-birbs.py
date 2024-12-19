@@ -297,9 +297,7 @@ Beginning processing...
         print(f"frame {iframe} {0 if classes is None else len(classes)} birds", end="\r")
 
         # draw boxes on top of original frame
-        img_p = frame.copy()
-        if boxes is not None:
-            draw(img_p, boxes, scores, classes, CLASSES)
+        frame_drawn = draw(frame, boxes, scores, classes, CLASSES)
 
         # check video writer worker is still alive
         if worker.exitcode:
@@ -309,7 +307,7 @@ Beginning processing...
         # send frame and classes to video worker
         frame_queue.put(
             {"classes": classes.copy() if classes is not None else None,
-             "drawn image": img_p.copy(),
+             "drawn image": frame_drawn.copy(),
              "original image": frame.copy(),
             }
         )
