@@ -10,8 +10,7 @@ import random
 import numpy as np
 import multiprocessing as mp
 
-from rknn_yolov5 import RKNN_model, COCO_test_helper, draw
-
+from rknn_yolov5 import RKNN_model
 
 OBJ_THRESH = 0.45
 NMS_THRESH = 0.5
@@ -291,13 +290,13 @@ Beginning processing...
             raise("Error reading frame from input feed.")
 
         # inference
-        boxes, classes, scores = model.infer(frame, anchors, IMG_SIZE, NMS_THRESH)
+        inf_res = model.infer(frame, anchors, IMG_SIZE, NMS_THRESH)
 
         # print number of detections to terminal
-        print(f"frame {iframe} {0 if classes is None else len(classes)} birds", end="\r")
+        print(f"frame {iframe} {0 if inf_res.classes is None else len(inf_res.classes)} birds", end="\r")
 
         # draw boxes on top of original frame
-        frame_drawn = draw(frame, boxes, scores, classes, CLASSES)
+        frame_drawn = inf_res.draw(CLASSES)
 
         # check video writer worker is still alive
         if worker.exitcode:
@@ -306,7 +305,7 @@ Beginning processing...
         
         # send frame and classes to video worker
         frame_queue.put(
-            {"classes": classes.copy() if classes is not None else None,
+            {"classes": inf_res.classes.copy() if inf_res.classes is not None else None,
              "drawn image": frame_drawn.copy(),
              "original image": frame.copy(),
             }
