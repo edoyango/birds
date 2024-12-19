@@ -6,6 +6,7 @@ from copy import copy
 import csv
 import datetime
 from pathlib import Path
+import random
 
 import numpy as np
 import multiprocessing as mp
@@ -14,7 +15,7 @@ from rknn.api import RKNN
 
 
 OBJ_THRESH = 0.45
-NMS_THRESH = 0.45
+NMS_THRESH = 0.5
 
 # The follew two param is for map test
 # OBJ_THRESH = 0.001
@@ -23,6 +24,8 @@ NMS_THRESH = 0.45
 IMG_SIZE = (704, 704)  # (width, height), such as (1280, 736)
 
 CLASSES = ("Blackbird", "Butcherbird", "Currawong", "Dove", "Lorikeet", "Myna", "Sparrow", "Starling", "Wattlebird")
+
+FFMPEG_CMD = "ffmpeg -y -hide_banner -loglevel error -i {input_video} -init_hw_device rkmpp=hw -filter_hw_device hw -vf hwupload,scale_rkrga=w=864:h=486 -c:v hevc_rkmpp -qp_init 20 {output_video}"
 
 class RKNN_model_container():
     def __init__(self, model_path, target=None, device_id=None) -> None:
@@ -377,7 +380,7 @@ class detected_bird_video:
             self.total_class_count[k] += v
             self.total_instances += v
     
-    def release(self):
+    def release(self, p_keep=0.9):
         """
         Release output video captures, add video metadata to meta.csv, and delete output videos if too short.
         """
@@ -423,15 +426,24 @@ class detected_bird_video:
         self.cap_trigger.release()
         self.cap_original.release()
 
-        # remove videos if too short
+        # compress output videos, removing if they don't meet the minframes threshold
         if self.nframes < self.minframes:
             self.trigger_vid_path.unlink(missing_ok=True)
             self.original_vid_path.unlink(missing_ok=True)
         else:
-            err = os.system(f"""ffmpeg -y -hide_banner -loglevel error -i {self.trigger_vid_path} -init_hw_device rkmpp=hw -filter_hw_device hw -vf hwupload,scale_rkrga=w=864:h=486 -c:v hevc_rkmpp -qp_init 20 {self.trigger_vid_path.parent / (self.trigger_vid_path.stem+"-compressed"+self.trigger_vid_path.suffix)} && rm {self.trigger_vid_path}
-                                ffmpeg -y -hide_banner -loglevel error -i {self.original_vid_path} -init_hw_device rkmpp=hw -filter_hw_device hw -vf hwupload,scale_rkrga=w=864:h=486 -c:v hevc_rkmpp -qp_init 20 {self.original_vid_path.parent / (self.original_vid_path.stem+"-compressed"+self.original_vid_path.suffix)} && rm {self.original_vid_path}
-                             """
-                     )
+            # randomly keep fullres video for training
+            if random.random > p_keep:
+                err = os.system(
+                    f"""{FFMPEG_CMD.format(input_video=self.trigger_vid_path, output_video=self.trigger_vid_path.parent / (self.trigger_vid_path.stem+"-compressed"+self.trigger_vid_path.suffix))} && rm {self.trigger_vid_path}
+                        {FFMPEG_CMD.format(input_video=self.original_vid_path, output_video=self.original_vid_path.parent / (self.original_vid_path.stem+"-compressed"+self.original_vid_path.suffix))} && rm {self.original_vid_path}
+                    """
+                )
+            else:
+                err = os.system(
+                    f"""{FFMPEG_CMD.format(input_video=self.trigger_vid_path, output_video=self.trigger_vid_path.parent / (self.trigger_vid_path.stem+"-compressed"+self.trigger_vid_path.suffix))}
+                        {FFMPEG_CMD.format(input_video=self.original_vid_path, output_video=self.original_vid_path.parent / (self.original_vid_path.stem+"-compressed"+self.original_vid_path.suffix))}
+                    """
+                )
             assert err==0, "Video compression failed."
             
 
