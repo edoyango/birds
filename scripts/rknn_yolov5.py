@@ -22,7 +22,29 @@ CLASS_COLOURS = (
 )
 
 class RKNN_model():
+    """
+    RKNN_model class for handling RKNN model loading, inference, and post-processing.
+    Methods:
+        __init__(model_path, target=None, device_id=None):
+        run(inputs):
+            Run inference on the given inputs using the loaded RKNN model.
+        post_process(input_data, anchors, imgsz=(640, 640), nms_thresh=0.7):
+        infer(inputs, anchors, imgsz, nms_thresh):
+            Perform inference on the input image and return the results with bounding boxes, classes, and scores.
+        release():
+            Release the RKNN model and free up resources.
+    """
     def __init__(self, model_path, target=None, device_id=None) -> None:
+        """
+        Initialize the RKNN model and runtime environment.
+        Args:
+            model_path (str): Path to the RKNN model file. Must end with '.rknn'.
+            target (str, optional): Target device for the runtime environment. Defaults to None.
+            device_id (str, optional): Device ID for the target device. Defaults to None.
+        Raises:
+            AssertionError: If the model_path does not end with '.rknn'.
+            SystemExit: If initializing the runtime environment fails.
+        """
 
         assert model_path.endswith('.rknn'), f"{model_path} is not rknn/pytorch/onnx model"
 
@@ -47,6 +69,15 @@ class RKNN_model():
     #     self.release()
 
     def run(self, inputs):
+        """
+        Run inference on the given inputs using the RKNN model.
+        Args:
+            inputs (numpy.ndarray): The input image to run inference on. If a single input is provided, 
+                                    it will be converted to a list.
+        Returns:
+            list: The inference results from the RKNN model. If the RKNN model has been released, 
+                  an empty list is returned.
+        """
         if self.rknn is None:
             print("ERROR: rknn has been released")
             return []
@@ -62,6 +93,20 @@ class RKNN_model():
 
     @staticmethod
     def post_process(input_data, anchors, imgsz=(640, 640), nms_thresh=0.7):
+        """
+        Post-process the RKNN inference output to get bounding boxes, classes, and scores.
+        Args:
+            input_data (list of np.ndarray): The output from the model inference.
+            anchors (list of list of tuples): Anchor boxes used in the model.
+            imgsz (tuple, optional): The size of the input image. Defaults to (640, 640).
+            nms_thresh (float, optional): Non-max suppression threshold. Defaults to 0.7.
+        
+        Returns:
+            tuple: A tuple containing:
+                - boxes (np.ndarray): Array of bounding boxes.
+                - classes (np.ndarray): Array of class indices for each box.
+                - scores (np.ndarray): Array of confidence scores for each box.
+        """
         boxes, scores, classes_conf = [], [], []
         # 1*255*h*w -> 3*85*h*w
         input_data = [_in.reshape([len(anchors[0]),-1]+list(_in.shape[-2:])) for _in in input_data]
@@ -111,6 +156,19 @@ class RKNN_model():
         return boxes, classes, scores
     
     def infer(self, inputs, anchors, imgsz, nms_thresh):
+        """
+        Perform inference on the input image using the YOLOv5 model.
+
+        Args:
+            inputs (numpy.ndarray): The input image in numpy array format.
+            anchors (list): List of anchor boxes used by the YOLOv5 model.
+            imgsz (int): The size to which the input image should be resized.
+            nms_thresh (float): The threshold for non-maximum suppression.
+
+        Returns:
+            inference_result: An object containing the detected bounding boxes, 
+                      classes, scores, and the original input image.
+        """
         # create a letterbox helper to store original dimensions
         letterbox_helper = COCO_test_helper()
         # letter box image
@@ -127,9 +185,16 @@ class RKNN_model():
         self.rknn = None
 
 def nms_boxes(boxes, scores, nms_thresh=0.7):
-    """Suppress non-maximal boxes.
-    # Returns
-        keep: ndarray, index of effective boxes.
+    """
+    Suppress non-maximal boxes using Non-Maximum Suppression (NMS).
+    Args:
+        boxes (numpy.ndarray): Array of bounding boxes with shape (N, 4), where N is the number of boxes.
+                            Each box is represented by four coordinates [x1, y1, x2, y2].
+        scores (numpy.ndarray): Array of scores for each bounding box with shape (N,).
+        nms_thresh (float): Threshold for the IoU (Intersection over Union) to suppress overlapping boxes. Default is 0.7.
+
+    Returns:
+        numpy.ndarray: Array of indices of the boxes that are kept after NMS.
     """
     x = boxes[:, 0]
     y = boxes[:, 1]
@@ -159,8 +224,21 @@ def nms_boxes(boxes, scores, nms_thresh=0.7):
     keep = np.array(keep)
     return keep
 
-
 def box_process(position, anchors, imgsz=(640, 640)):
+    """
+    Processes bounding box predictions from a neural network to convert them into
+    a more usable format.
+    Args:
+        position (np.ndarray): The raw bounding box predictions from the network.
+            Expected shape is (batch_size, 4, grid_h, grid_w).
+        anchors (list or np.ndarray): The anchor boxes used in the network. Expected
+            shape is (num_anchors, 2).
+        imgsz (tuple, optional): The size of the input image. Default is (640, 640).
+
+    Returns:
+        np.ndarray: The processed bounding boxes in the format [x1, y1, x2, y2].
+            Shape is (batch_size, 4, grid_h, grid_w).
+    """
     grid_h, grid_w = position.shape[2:4]
     col, row = np.meshgrid(np.arange(0, grid_w), np.arange(0, grid_h))
     col = col.reshape(1, 1, grid_h, grid_w)
@@ -191,7 +269,19 @@ def box_process(position, anchors, imgsz=(640, 640)):
 
 
 def filter_boxes(boxes, box_confidences, box_class_probs, obj_thresh=0.5):
-    """Filter boxes with object threshold.
+    """
+    Filter boxes with object threshold.
+    Args:
+        boxes (numpy.ndarray): Array of bounding boxes.
+        box_confidences (numpy.ndarray): Array of confidences for each box.
+        box_class_probs (numpy.ndarray): Array of class probabilities for each box.
+        obj_thresh (float): Object confidence threshold. Default is 0.5.
+
+    Returns:
+        tuple: A tuple containing:
+            - boxes (numpy.ndarray): Filtered bounding boxes.
+            - classes (numpy.ndarray): Class indices for the filtered boxes.
+            - scores (numpy.ndarray): Scores for the filtered boxes.
     """
     box_confidences = box_confidences.reshape(-1)
     class_max_score = np.max(box_class_probs, axis=-1)
@@ -206,15 +296,57 @@ def filter_boxes(boxes, box_confidences, box_class_probs, obj_thresh=0.5):
     return boxes, classes, scores
 
 class inference_result:
+    """
+    A class to represent the result of an inference.
 
+    Attributes
+    ----------
+    boxes : list
+        A list of bounding boxes for detected objects.
+    classes : list
+        A list of class indices for detected objects.
+    scores : list
+        A list of confidence scores for detected objects.
+    img : numpy.ndarray
+        The image on which inference was performed.
+
+    Methods
+    -------
+    draw(model_classes, conf=True):
+        Draws bounding boxes and class labels on the image.
+    """
     def __init__(self, boxes, classes, scores, img):
+        """
+        Initialize the object with bounding boxes, class labels, confidence scores, and an image.
 
+        Args:
+            boxes (list): A list of bounding boxes.
+            classes (list): A list of class labels corresponding to the bounding boxes.
+            scores (list): A list of confidence scores corresponding to the bounding boxes.
+            img (numpy.ndarray): The image on which the detections were made.
+
+        Attributes:
+            boxes (list): Stores the bounding boxes.
+            classes (list): Stores the class labels.
+            scores (list): Stores the confidence scores.
+            img (numpy.ndarray): A copy of the input image.
+        """
         self.boxes = boxes
         self.classes = classes
         self.scores = scores
         self.img = img.copy()
 
     def draw(self, model_classes, conf=True):
+        """
+        Draws bounding boxes and class labels on the image.
+
+        Args:
+            model_classes (list): List of class names corresponding to the detected objects.
+            conf (bool, optional): If True, display the confidence score along with the class label. Defaults to True.
+
+        Returns:
+            numpy.ndarray: The image with bounding boxes and class labels drawn.
+        """
         img_copy = self.img.copy()
         if self.boxes is not None:
             for i, (box, score, cl) in enumerate(zip(self.boxes, self.scores, self.classes)):
@@ -229,7 +361,31 @@ class inference_result:
         return img_copy
 
 class Letter_Box_Info():
+    """
+    A class to store information about letterbox resizing.
+
+    Attributes:
+        origin_shape (tuple): The original shape of the image.
+        new_shape (tuple): The new shape of the image after resizing.
+        w_ratio (float): The width ratio between the new shape and the original shape.
+        h_ratio (float): The height ratio between the new shape and the original shape.
+        dw (int): The width padding added to the image.
+        dh (int): The height padding added to the image.
+        pad_color (tuple): The color used for padding.
+    """
     def __init__(self, shape, new_shape, w_ratio, h_ratio, dw, dh, pad_color) -> None:
+        """
+        Initializes the parameters for resizing and padding an image.
+
+        Args:
+            shape (tuple): The original shape of the image (height, width).
+            new_shape (tuple): The new shape of the image (height, width).
+            w_ratio (float): The width ratio for resizing.
+            h_ratio (float): The height ratio for resizing.
+            dw (int): The padding added to the width.
+            dh (int): The padding added to the height.
+            pad_color (tuple): The color used for padding (R, G, B).
+        """
         self.origin_shape = shape
         self.new_shape = new_shape
         self.w_ratio = w_ratio
@@ -239,10 +395,43 @@ class Letter_Box_Info():
         self.pad_color = pad_color
 
 class COCO_test_helper():
+    """
+    A helper class for handling COCO dataset related operations, specifically for resizing and padding images
+    while maintaining aspect ratio and for converting bounding box coordinates.
+    Attributes:
+        letter_box_info (Letter_Box_Info): Stores information about the letterbox transformation.
+    Methods:
+        __init__():
+            Initializes the COCO_test_helper instance.
+        letter_box(im, new_shape, pad_color=(0,0,0), info_need=False):
+            Resizes and pads the input image to the new shape while maintaining aspect ratio.
+            Optionally returns the transformation ratio and padding information.
+        get_real_box(box, in_format='xyxy'):
+            Converts the bounding box coordinates from the letterboxed image back to the original image coordinates.
+    """
     def __init__(self) -> None:
+        """
+        Initializes the instance variables for the class.
+
+        Attributes:
+            letter_box_info (None): Placeholder for letter box information, initialized to None.
+        """
         self.letter_box_info = None
 
     def letter_box(self, im, new_shape, pad_color=(0,0,0), info_need=False):
+        """
+        Resize and pad an image to fit a new shape while maintaining aspect ratio.
+        Args:
+            im (numpy.ndarray): The input image to be resized and padded.
+            new_shape (int or tuple): The desired shape (height, width) to resize the image to. If an integer is provided, it will be used for both dimensions.
+            pad_color (tuple, optional): The color of the padding to be added to the image. Default is (0, 0, 0) which is black.
+            info_need (bool, optional): If True, returns additional information about the resizing and padding. Default is False.
+        Returns:
+            numpy.ndarray: The resized and padded image.
+            tuple (optional): If info_need is True, returns a tuple containing:
+                - ratio (float): The scaling ratio used for resizing.
+                - (dw, dh) (tuple): The padding added to the width and height respectively.
+        """
         # Resize and pad image while meeting stride-multiple constraints
         shape = im.shape[:2]  # current shape [height, width]
         if isinstance(new_shape, int):
@@ -272,6 +461,25 @@ class COCO_test_helper():
             return im
 
     def get_real_box(self, box, in_format='xyxy'):
+        """
+        Transforms bounding box coordinates from letterboxed image back to original image coordinates.
+
+        Args:
+            box (numpy.ndarray): Array of shape (N, 4) containing bounding box coordinates
+                in the letterboxed image space, where N is the number of boxes.
+            in_format (str, optional): Format of input box coordinates. Currently only supports 'xyxy'.
+                Defaults to 'xyxy'.
+
+        Returns:
+            numpy.ndarray: Array of shape (N, 4) containing transformed bounding box coordinates
+                in the original image space. Coordinates are clipped to image boundaries.
+
+        Notes:
+            - For 'xyxy' format, box coordinates are in order: [x1, y1, x2, y2]
+            - The method removes letterboxing padding and scales coordinates according to
+              the letterboxing ratios stored in self.letter_box_info
+            - Coordinates are clipped to ensure they fall within original image dimensions
+        """
         bbox = copy(box)
         # unletter_box result
         if in_format=='xyxy':

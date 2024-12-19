@@ -26,6 +26,15 @@ CLASSES = ("Blackbird", "Butcherbird", "Currawong", "Dove", "Lorikeet", "Myna", 
 FFMPEG_CMD = "ffmpeg -y -hide_banner -loglevel error -i {input_video} -init_hw_device rkmpp=hw -filter_hw_device hw -vf hwupload,scale_rkrga=w=864:h=486 -c:v hevc_rkmpp -qp_init 20 {output_video}"
 
 def open_video(vname):
+    """
+    Opens a video file for reading and sets the video capture properties.
+    Args:
+        vname (str): The path to the video file.
+    Returns:
+        cv2.VideoCapture: The video capture object.
+    Raises:
+        RuntimeError: If the video file cannot be opened.
+    """
 
     cap = cv2.VideoCapture(vname)
 
@@ -39,6 +48,14 @@ def open_video(vname):
     return cap
 
 def img_check(path):
+    """
+    Checks if the given file path has an image extension.
+    Args:
+        path (str): The file path to check.
+    Returns:
+        bool: True if the file has an image extension (.jpg, .jpeg, .png, .bmp), 
+              False otherwise.
+    """
     img_type = ['.jpg', '.jpeg', '.png', '.bmp']
     for _type in img_type:
         if path.endswith(_type) or path.endswith(_type.upper()):
@@ -46,6 +63,13 @@ def img_check(path):
     return False
 
 def count_detections(classes):
+    """
+    Count the occurrences of each class in the given list of classes.
+    Args:
+        classes (list): A list of class identifiers (as integers or strings that can be converted to integers).
+    Returns:
+        dict: A dictionary where the keys are class names (from the global CLASSES dictionary) and the values are the counts of each class in the input list.
+    """
 
     counts = {}
     for i in classes:
@@ -58,7 +82,52 @@ def count_detections(classes):
     return {CLASSES[k]: v for k, v in counts.items()}
 
 class detected_bird_video:
+    """
+    Class to handle detected bird video processing, including writing frames, saving metadata, and compressing videos.
+    Attributes:
+        vid_name (str): Name of the video file based on the current timestamp and prefix.
+        trigger_dir (Path): Directory to save trigger videos.
+        trigger_firstframes_dir (Path): Directory to save first frames of trigger videos.
+        original_dir (Path): Directory to save original videos.
+        original_firstframes_dir (Path): Directory to save first frames of original videos.
+        fps (int): Frames per second of the video.
+        width (int): Width of the video frame.
+        height (int): Height of the video frame.
+        minframes (int): Minimum number of frames required to keep the video.
+        trigger_vid_path (Path): Path to the trigger video file.
+        original_vid_path (Path): Path to the original video file.
+        trigger_firstframe_path (Path): Path to the first frame image of the trigger video.
+        original_firstframe_path (Path): Path to the first frame image of the original video.
+        meta_csv (Path): Path to the CSV file storing video metadata.
+        cap_trigger (cv2.VideoWriter): OpenCV VideoWriter object for the trigger video.
+        cap_original (cv2.VideoWriter): OpenCV VideoWriter object for the original video.
+        nframes (int): Number of frames written to the video.
+        total_instances (int): Total number of detected instances.
+        total_class_count (dict): Dictionary storing the count of each detected class.
+        opened (bool): Flag indicating if the video writers are opened successfully.
+    Methods:
+        __init__(self, output_path, fps, width, height, minframes, prefix):
+            Initializes the detected_bird_video object with the given parameters and sets up directories and video writers.
+        write(self, trigger_frame, original_frame, classes):
+            Writes trigger frame and original frame to respective video writers and updates class counts.
+        release(self, p_keep=0.9):
+            Releases resources and saves metadata. Handles video compression and cleanup based on frame count threshold.
+        isOpened(self):
+            Helper function to indicate if videos are open.
+    """
     def __init__(self, output_path, fps, width, height, minframes, prefix):
+        """
+        Initialize the video extraction and processing class.
+        Args:
+            output_path (str): The base directory where output videos and metadata will be saved.
+            fps (int): Frames per second for the output videos.
+            width (int): Width of the output video frames.
+            height (int): Height of the output video frames.
+            minframes (int): Minimum number of frames required for processing.
+            prefix (str): Prefix for naming the output video files.
+        Raises:
+            RuntimeError: If there is a problem opening the trigger or original video files.
+        """
 
         # define video name
         # assumes there is <1s difference between when the frame is captured
@@ -110,7 +179,15 @@ class detected_bird_video:
     
     def write(self, trigger_frame, original_frame, classes):
         """
-        Write frames to trigger and original videos and record number of classes detected.
+        Writes trigger frame and original frame to respective video writers and updates class counts.
+        Args:
+            trigger_frame (numpy.ndarray): Frame with highlighted detections/triggers
+            original_frame (numpy.ndarray): Original unmodified frame
+            classes (list, optional): List of detected object classes. Defaults to None.
+        Notes:
+            - If first frame (nframes=0), saves individual images of both trigger and original frames
+            - Updates running totals of detected object classes and total instance counts
+            - Uses OpenCV (cv2) for writing frames
         """
 
         if self.nframes == 0:
@@ -128,8 +205,22 @@ class detected_bird_video:
             self.total_instances += v
     
     def release(self, p_keep=0.9):
-        """
-        Release output video captures, add video metadata to meta.csv, and delete output videos if too short.
+        """Release resources and save metadata.
+        This method performs the following operations:
+        1. Saves metadata to a CSV file including video paths, frame counts, and object instances
+        2. Releases video capture objects
+        3. Handles video compression and cleanup based on frame count threshold
+        4. Marks the instance as closed
+        Args:
+            p_keep (float): Probability of keeping the full resolution video for training (default 0.9)
+                            If random value > p_keep, original videos are removed after compression
+        Notes
+            - Videos shorter than minframes threshold are deleted
+            - Longer videos are compressed using FFMPEG
+            - Metadata is appended to existing CSV if present, otherwise creates new file
+            - Sets self.opened to False when complete
+        Raises
+            AssertionError: If video compression fails (non-zero FFMPEG return code)
         """
 
         # initialise row and header
@@ -204,6 +295,25 @@ class detected_bird_video:
         return self.opened
 
 def video_writer_worker(queue, w, h, wait_limit, output_path):
+    """Process a video stream and write frames with detected birds.
+
+    This function continuously reads frames from a queue and writes them to an output video
+    when birds are detected. It maintains a counter to track consecutive frames without
+    birds and stops writing after a specified wait limit is reached.
+
+    Args:
+        queue (Queue): A queue containing dictionaries with frame data and detection results.
+            Each dictionary should contain 'classes', 'drawn image', and 'original image'.
+        w (int): Width of the output video frames.
+        h (int): Height of the output video frames.
+        wait_limit (int): Number of frames to continue recording after last bird detection.
+        output_path (str): Path where the output video files will be saved.
+
+    The function processes each frame until it receives None in the queue, which signals
+    termination. For each frame containing a bird detection, it resets the wait counter
+    and writes the frame to the output video. When no birds are detected for more than
+    wait_limit frames, it closes the current output video file.
+    """
 
     # initialize output video
     output_video = None
