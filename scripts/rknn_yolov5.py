@@ -42,6 +42,59 @@ class RKNN_model():
     
         return result
 
+    @staticmethod
+    def post_process(input_data, anchors, imgsz=(640, 640), nms_thresh=0.7):
+        boxes, scores, classes_conf = [], [], []
+        # 1*255*h*w -> 3*85*h*w
+        input_data = [_in.reshape([len(anchors[0]),-1]+list(_in.shape[-2:])) for _in in input_data]
+        for i in range(len(input_data)):
+            boxes.append(box_process(input_data[i][:,:4,:,:], anchors[i], imgsz=imgsz))
+            scores.append(input_data[i][:,4:5,:,:])
+            classes_conf.append(input_data[i][:,5:,:,:])
+
+        def sp_flatten(_in):
+            ch = _in.shape[1]
+            _in = _in.transpose(0,2,3,1)
+            return _in.reshape(-1, ch)
+
+        boxes = [sp_flatten(_v) for _v in boxes]
+        classes_conf = [sp_flatten(_v) for _v in classes_conf]
+        scores = [sp_flatten(_v) for _v in scores]
+
+        boxes = np.concatenate(boxes)
+        classes_conf = np.concatenate(classes_conf)
+        scores = np.concatenate(scores)
+
+        # filter according to threshold
+        boxes, classes, scores = filter_boxes(boxes, scores, classes_conf)
+
+        # nms
+        nboxes, nclasses, nscores = [], [], []
+
+        for c in set(classes):
+            inds = np.where(classes == c)
+            b = boxes[inds]
+            c = classes[inds]
+            s = scores[inds]
+            keep = nms_boxes(b, s, nms_thresh)
+
+            if len(keep) != 0:
+                nboxes.append(b[keep])
+                nclasses.append(c[keep])
+                nscores.append(s[keep])
+
+        if not nclasses and not nscores:
+            return None, None, None
+
+        boxes = np.concatenate(nboxes)
+        classes = np.concatenate(nclasses)
+        scores = np.concatenate(nscores)
+
+        return boxes, classes, scores
+    
+    def infer(self, inputs, anchors, imgsz, nms_thresh):
+        return self.post_process(self.run(inputs), anchors, imgsz, nms_thresh)
+
     def release(self):
         self.rknn.release()
         self.rknn = None
@@ -124,56 +177,6 @@ def filter_boxes(boxes, box_confidences, box_class_probs, obj_thresh=0.5):
     classes = classes[_class_pos]
 
     return boxes, classes, scores
-
-def post_process(input_data, anchors, imgsz=(640, 640), nms_thresh=0.7):
-    boxes, scores, classes_conf = [], [], []
-    # 1*255*h*w -> 3*85*h*w
-    input_data = [_in.reshape([len(anchors[0]),-1]+list(_in.shape[-2:])) for _in in input_data]
-    for i in range(len(input_data)):
-        boxes.append(box_process(input_data[i][:,:4,:,:], anchors[i], imgsz=imgsz))
-        scores.append(input_data[i][:,4:5,:,:])
-        classes_conf.append(input_data[i][:,5:,:,:])
-
-    def sp_flatten(_in):
-        ch = _in.shape[1]
-        _in = _in.transpose(0,2,3,1)
-        return _in.reshape(-1, ch)
-
-    boxes = [sp_flatten(_v) for _v in boxes]
-    classes_conf = [sp_flatten(_v) for _v in classes_conf]
-    scores = [sp_flatten(_v) for _v in scores]
-
-    boxes = np.concatenate(boxes)
-    classes_conf = np.concatenate(classes_conf)
-    scores = np.concatenate(scores)
-
-    # filter according to threshold
-    boxes, classes, scores = filter_boxes(boxes, scores, classes_conf)
-
-    # nms
-    nboxes, nclasses, nscores = [], [], []
-
-    for c in set(classes):
-        inds = np.where(classes == c)
-        b = boxes[inds]
-        c = classes[inds]
-        s = scores[inds]
-        keep = nms_boxes(b, s, nms_thresh)
-
-        if len(keep) != 0:
-            nboxes.append(b[keep])
-            nclasses.append(c[keep])
-            nscores.append(s[keep])
-
-    if not nclasses and not nscores:
-        return None, None, None
-
-    boxes = np.concatenate(nboxes)
-    classes = np.concatenate(nclasses)
-    scores = np.concatenate(nscores)
-
-    return boxes, classes, scores
-
 
 def draw(image, boxes, scores, classes, model_classes):
     for box, score, cl in zip(boxes, scores, classes):

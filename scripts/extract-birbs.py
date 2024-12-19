@@ -10,7 +10,7 @@ import random
 import numpy as np
 import multiprocessing as mp
 
-from rknn_yolov5 import RKNN_model, COCO_test_helper, post_process, draw
+from rknn_yolov5 import RKNN_model, COCO_test_helper, draw
 
 
 OBJ_THRESH = 0.45
@@ -299,8 +299,7 @@ Beginning processing...
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         # inference
-        outputs = model.run([img])
-        boxes, classes, scores = post_process(outputs, anchors, IMG_SIZE, NMS_THRESH)
+        boxes, classes, scores = model.infer([img], anchors, IMG_SIZE, NMS_THRESH)
 
         # print number of detections to terminal
         print(f"frame {iframe} {0 if classes is None else len(classes)} birds", end="\r")
