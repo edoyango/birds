@@ -251,9 +251,6 @@ if __name__ == '__main__':
     # init model
     model = RKNN_model(args.model_path, args.target, args.device_id)
 
-    # create letterboxing class
-    co_helper = COCO_test_helper()
-
     # open video and define some metadata
     cap = open_video(args.video)
     fps=10.0 # temporary fix
@@ -293,13 +290,8 @@ Beginning processing...
         if not suc:
             raise("Error reading frame from input feed.")
 
-        # letterbox video as per training
-        pad_color = (0,0,0)
-        img = co_helper.letter_box(im= frame.copy(), new_shape=(IMG_SIZE[1], IMG_SIZE[0]), pad_color=(0,0,0))
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
         # inference
-        boxes, classes, scores = model.infer([img], anchors, IMG_SIZE, NMS_THRESH)
+        boxes, classes, scores = model.infer(frame, anchors, IMG_SIZE, NMS_THRESH)
 
         # print number of detections to terminal
         print(f"frame {iframe} {0 if classes is None else len(classes)} birds", end="\r")
@@ -307,7 +299,7 @@ Beginning processing...
         # draw boxes on top of original frame
         img_p = frame.copy()
         if boxes is not None:
-            draw(img_p, co_helper.get_real_box(boxes), scores, classes, CLASSES)
+            draw(img_p, boxes, scores, classes, CLASSES)
 
         # check video writer worker is still alive
         if worker.exitcode:

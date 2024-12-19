@@ -93,7 +93,16 @@ class RKNN_model():
         return boxes, classes, scores
     
     def infer(self, inputs, anchors, imgsz, nms_thresh):
-        return self.post_process(self.run(inputs), anchors, imgsz, nms_thresh)
+        # create a letterbox helper to store original dimensions
+        letterbox_helper = COCO_test_helper()
+        # letter box image
+        letterboxed_image = cv2.cvtColor(letterbox_helper.letter_box(inputs, imgsz), cv2.COLOR_BGR2RGB)
+        # inference
+        boxes, classes, scores = self.post_process(self.run([letterboxed_image]), anchors, imgsz, nms_thresh)
+        # return results, with unletterboxed boxes
+        if boxes is not None:
+            boxes = letterbox_helper.get_real_box(boxes)
+        return boxes, classes, scores
 
     def release(self):
         self.rknn.release()
