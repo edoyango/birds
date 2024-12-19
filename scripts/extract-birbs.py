@@ -295,9 +295,6 @@ Beginning processing...
         # print number of detections to terminal
         print(f"frame {iframe} {0 if inf_res.classes is None else len(inf_res.classes)} birds", end="\r")
 
-        # draw boxes on top of original frame
-        frame_drawn = inf_res.draw(CLASSES)
-
         # check video writer worker is still alive
         if worker.exitcode:
             worker.close()
@@ -306,7 +303,7 @@ Beginning processing...
         # send frame and classes to video worker
         frame_queue.put(
             {"classes": inf_res.classes.copy() if inf_res.classes is not None else None,
-             "drawn image": frame_drawn.copy(),
+             "drawn image": inf_res.draw(CLASSES).copy(),
              "original image": frame.copy(),
             }
         )
