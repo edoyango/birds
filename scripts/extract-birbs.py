@@ -133,6 +133,10 @@ def open_video(vname):
 
     cap = cv2.VideoCapture(vname)
 
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"YUYV"))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
     if (cap.isOpened() == False):  
         raise RuntimeError("Error reading video file")
 
@@ -309,7 +313,7 @@ class detected_bird_video:
         # define video name
         # assumes there is <1s difference between when the frame is captured
         # and video is opened by worker
-        self.vid_name = f"{prefix}{datetime.datetime.now().strftime('%Y-%m-%d_%H-%H-%S')}"
+        self.vid_name = f"{prefix}{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
 
         # define and create output directories
         self.trigger_dir = Path(output_path) / "triggers"
@@ -423,6 +427,13 @@ class detected_bird_video:
         if self.nframes < self.minframes:
             self.trigger_vid_path.unlink(missing_ok=True)
             self.original_vid_path.unlink(missing_ok=True)
+        else:
+            err = os.system(f"""ffmpeg -y -hide_banner -loglevel error -i {self.trigger_vid_path} -init_hw_device rkmpp=hw -filter_hw_device hw -vf hwupload,scale_rkrga=w=864:h=486 -c:v hevc_rkmpp -qp_init 20 {self.trigger_vid_path.parent / (self.trigger_vid_path.stem+"-compressed"+self.trigger_vid_path.suffix)} && rm {self.trigger_vid_path}
+                                ffmpeg -y -hide_banner -loglevel error -i {self.original_vid_path} -init_hw_device rkmpp=hw -filter_hw_device hw -vf hwupload,scale_rkrga=w=864:h=486 -c:v hevc_rkmpp -qp_init 20 {self.original_vid_path.parent / (self.original_vid_path.stem+"-compressed"+self.original_vid_path.suffix)} && rm {self.original_vid_path}
+                             """
+                     )
+            assert err==0, "Video compression failed."
+            
 
         # tag as closed
         self.opened = False
@@ -435,23 +446,30 @@ class detected_bird_video:
 
 def video_writer_worker(queue, w, h, wait_limit, output_path):
 
-    # open output video
-    output_video = detected_bird_video(output_path, 10, w, h, 50, "test-")
+    # initialize output video
+    output_video = None
 
     # start reading frames from master
+    wait_counter = sys.maxsize
     while True:
         res = queue.get()
         if res is None:
             break
         else:
-            output_video.write(res["drawn image"], res["original image"], res["classes"])
-    output_video.release()
+            bird_detected = res["classes"] is not None
+            wait_counter = 0 if bird_detected else wait_counter + 1
+            if wait_counter < wait_limit:
+                if not output_video or not output_video.isOpened():
+                    output_video = detected_bird_video(output_path, 10, w, h, 50, "")
+                output_video.write(res["drawn image"], res["original image"], res["classes"])
+            elif output_video and output_video.isOpened():
+                output_video.release()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Detect birds from a video feed.')
     # basic params
     parser.add_argument('--model_path', type=str, required= True, help='model path, could be .pt or .rknn file')
-    parser.add_argument('--target', type=str, default='rk3566', help='target RKNPU platform')
+    parser.add_argument('--target', type=str, default='rk3588', help='target RKNPU platform')
     parser.add_argument('--device_id', type=str, default=None, help='device id')
 
     # data params
@@ -460,6 +478,7 @@ if __name__ == '__main__':
 
     # output
     parser.add_argument("--output-dir", "-o", type=Path, default=Path("."), help="Output directory to save inference results.")
+    parser.add_argument("--max-frames", "-m", type=int, default=0, help="Maximum number of frames to record for.")
 
     args = parser.parse_args()
 
@@ -479,6 +498,8 @@ if __name__ == '__main__':
     cap = open_video(args.video)
     fps=10.0 # temporary fix
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if args.max_frames == 0: args.max_frames = sys.maxsize
+    total_frames = args.max_frames if total_frames < 0 else min(total_frames, args.max_frames)
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     wait_limit = 50
@@ -488,6 +509,7 @@ if __name__ == '__main__':
 OUTPUT DIRECTORY: result/{{originals,triggers}}
 DETECTION MODEL: {args.model_path}
 WAIT LIMIT: {wait_limit} frames
+MAX FRAMES: {args.max_frames} frames
 
 Beginning processing...
 """)
@@ -535,8 +557,8 @@ Beginning processing...
         
         # send frame and classes to video worker
         frame_queue.put(
-            {"classes": classes,
-             "drawn image": img_p,
+            {"classes": classes.copy() if classes is not None else None,
+             "drawn image": img_p.copy(),
              "original image": frame.copy(),
             }
         )
