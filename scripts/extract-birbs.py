@@ -10,7 +10,7 @@ import random
 import numpy as np
 import multiprocessing as mp
 
-from rknn_yolov5 import setup_model, COCO_test_helper, post_process, draw
+from rknn_yolov5 import RKNN_model, COCO_test_helper, post_process, draw
 
 
 OBJ_THRESH = 0.45
@@ -249,7 +249,7 @@ if __name__ == '__main__':
     print("use anchors from '{}', which is {}".format(args.anchors, anchors))
     
     # init model
-    model, platform = setup_model(args)
+    model = RKNN_model(args.model_path, args.target, args.device_id)
 
     # create letterboxing class
     co_helper = COCO_test_helper()

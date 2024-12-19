@@ -3,8 +3,11 @@ import cv2
 from copy import copy
 from rknn.api import RKNN
 
-class RKNN_model_container():
+class RKNN_model():
     def __init__(self, model_path, target=None, device_id=None) -> None:
+
+        assert model_path.endswith('.rknn'), f"{model_path} is not rknn/pytorch/onnx model"
+
         rknn = RKNN()
 
         # Direct Load RKNN Model
@@ -178,16 +181,6 @@ def draw(image, boxes, scores, classes, model_classes):
         cv2.rectangle(image, (top, left), (right, bottom), (255, 0, 0), 2)
         cv2.putText(image, '{0} {1:.2f}'.format(model_classes[cl], score),
                     (top, left - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-
-def setup_model(args):
-    model_path = args.model_path
-    if model_path.endswith('.rknn'):
-        platform = 'rknn' 
-        model = RKNN_model_container(args.model_path, args.target, args.device_id)
-    else:
-        assert False, "{} is not rknn/pytorch/onnx model".format(model_path)
-    print('Model-{} is {} model, starting val'.format(model_path, platform))
-    return model, platform
 
 class Letter_Box_Info():
     def __init__(self, shape, new_shape, w_ratio, h_ratio, dw, dh, pad_color) -> None:
