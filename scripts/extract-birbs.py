@@ -302,7 +302,7 @@ class detected_bird_video:
             self.original_vid_path.unlink(missing_ok=True)
         else:
             # randomly keep fullres video for training
-            if random.random() > p_keep:
+            if random.random() < p_keep:
                 err = os.system(
                     f"""{FFMPEG_CMD.format(input_video=self.trigger_vid_path, output_video=self.trigger_vid_path.parent / (self.trigger_vid_path.stem+"-compressed"+self.trigger_vid_path.suffix))} && rm {self.trigger_vid_path}
                         {FFMPEG_CMD.format(input_video=self.original_vid_path, output_video=self.original_vid_path.parent / (self.original_vid_path.stem+"-compressed"+self.original_vid_path.suffix))} && rm {self.original_vid_path}

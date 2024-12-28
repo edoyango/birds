@@ -85,12 +85,10 @@ class inference_result:
         """
         img_copy = self.img.copy()
         if self.boxes is not None:
-            for i, (box, score, cl) in enumerate(
-                zip(self.boxes, self.scores, self.classes)
-            ):
+            for box, score, cl in zip(self.boxes, self.scores, self.classes):
                 top, left, right, bottom = [int(_b) for _b in box]
                 cv2.rectangle(
-                    img_copy, (top, left), (right, bottom), CLASS_COLOURS[i], 2
+                    img_copy, (top, left), (right, bottom), CLASS_COLOURS[cl], 2
                 )
                 if conf:
                     cv2.putText(
@@ -99,7 +97,7 @@ class inference_result:
                         (top, left - 6),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.6,
-                        CLASS_COLOURS[i],
+                        CLASS_COLOURS[cl],
                         2,
                     )
                 else:
@@ -109,7 +107,7 @@ class inference_result:
                         (top, left - 6),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.6,
-                        CLASS_COLOURS[i],
+                        CLASS_COLOURS[cl],
                         2,
                     )
         return img_copy
