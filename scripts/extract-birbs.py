@@ -327,7 +327,7 @@ class detected_bird_video:
 
 
 def video_writer_worker(
-    queue: mp.Queue, w: int, h: int, wait_limit: int, output_path: Path
+    queue: mp.Queue, w: int, h: int, wait_limit: int, output_path: Path, video_prefix: str = ""
 ) -> None:
     """Process a video stream and write frames with detected birds.
 
@@ -363,7 +363,7 @@ def video_writer_worker(
             wait_counter = 0 if bird_detected else wait_counter + 1
             if wait_counter < wait_limit:
                 if not output_video or not output_video.isOpened():
-                    output_video = detected_bird_video(output_path, 10, w, h, 50, "")
+                    output_video = detected_bird_video(output_path, 10, w, h, 50, video_prefix)
                 output_video.write(
                     res["drawn image"], res["original image"], res["classes"]
                 )
@@ -415,6 +415,13 @@ if __name__ == "__main__":
         default=0,
         help="Maximum number of frames to record for.",
     )
+    parser.add_argument(
+        "--video-name-prefix",
+        "-p",
+        type=str,
+        default="",
+        help="Prefix for the output video files.",
+    )
 
     args = parser.parse_args()
 
@@ -456,7 +463,7 @@ Beginning processing...
     frame_queue = mp.Queue()
     worker = mp.Process(
         target=video_writer_worker,
-        args=(frame_queue, w, h, wait_limit, args.output_dir),
+        args=(frame_queue, w, h, wait_limit, args.output_dir, args.video_name_prefix),
     )
     worker.start()
 
