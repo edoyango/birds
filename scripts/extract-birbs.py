@@ -12,7 +12,7 @@ import multiprocessing as mp
 
 from rknn_yolov5 import RKNN_model
 
-OBJ_THRESH = 0.45
+OBJ_THRESH = 0.5
 NMS_THRESH = 0.5
 
 # The follew two param is for map test
@@ -255,12 +255,14 @@ class detected_bird_video:
         """
 
         # initialise row and header
+        compressed_trigger_vid_path = self.trigger_vid_path.parent / (self.trigger_vid_path.stem+"-compressed"+self.trigger_vid_path.suffix)
+        compressed_original_vid_path = self.original_vid_path.parent / (self.original_vid_path.stem+"-compressed"+self.original_vid_path.suffix)
         row = [
             "N/A",
             "N/A",
-            self.original_vid_path,
+            compressed_original_vid_path,
             self.original_firstframe_path,
-            self.trigger_vid_path,
+            compressed_trigger_vid_path,
             self.trigger_firstframe_path,
             self.nframes,
             self.total_instances / self.nframes,
@@ -304,14 +306,14 @@ class detected_bird_video:
             # randomly keep fullres video for training
             if random.random() < p_keep:
                 err = os.system(
-                    f"""{FFMPEG_CMD.format(input_video=self.trigger_vid_path, output_video=self.trigger_vid_path.parent / (self.trigger_vid_path.stem+"-compressed"+self.trigger_vid_path.suffix))} && rm {self.trigger_vid_path}
-                        {FFMPEG_CMD.format(input_video=self.original_vid_path, output_video=self.original_vid_path.parent / (self.original_vid_path.stem+"-compressed"+self.original_vid_path.suffix))} && rm {self.original_vid_path}
+                    f"""{FFMPEG_CMD.format(input_video=self.trigger_vid_path, output_video=compressed_trigger_vid_path)} && rm {self.trigger_vid_path}
+                        {FFMPEG_CMD.format(input_video=self.original_vid_path, output_video=compressed_original_vid_path)} && rm {self.original_vid_path}
                     """
                 )
             else:
                 err = os.system(
-                    f"""{FFMPEG_CMD.format(input_video=self.trigger_vid_path, output_video=self.trigger_vid_path.parent / (self.trigger_vid_path.stem+"-compressed"+self.trigger_vid_path.suffix))}
-                        {FFMPEG_CMD.format(input_video=self.original_vid_path, output_video=self.original_vid_path.parent / (self.original_vid_path.stem+"-compressed"+self.original_vid_path.suffix))}
+                    f"""{FFMPEG_CMD.format(input_video=self.trigger_vid_path, output_video=compressed_trigger_vid_path)}
+                        {FFMPEG_CMD.format(input_video=self.original_vid_path, output_video=compressed_original_vid_path)}
                     """
                 )
             assert err == 0, "Video compression failed."
