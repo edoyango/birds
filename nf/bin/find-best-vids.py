@@ -1,6 +1,19 @@
 #!/usr/bin/env python3
 import pandas as pd
+import numpy as np
 import argparse
+
+WEIGHTS = {
+    "Blackbird": 4, 
+    "Butcherbird": 8, 
+    "Currawong": 7, 
+    "Dove": 1, 
+    "Lorikeet": 9, 
+    "Myna": 3, 
+    "Sparrow": 2, 
+    "Starling": 5, 
+    "Wattlebird": 6
+}
 
 def calculate_simpsons_diversity(species_counts):
     """
@@ -29,13 +42,16 @@ def main(args):
     min_frames = args.duration*10 # assume 10 fps
     filtered_data = data[data[frames_column] >= min_frames].copy()
 
+    # apply weights to species columns
+    filtered_data[species_columns] = filtered_data[species_columns].mul(WEIGHTS, axis=1)
+
     # Calculate Simpson's Diversity Index for each video
     filtered_data[metric_column] = filtered_data[species_columns].apply(
         lambda row: calculate_simpsons_diversity(row.tolist()), axis=1
     )
 
     # weight simpson's diversity with no. of frames
-    filtered_data[metric_column] = filtered_data[metric_column]*filtered_data[frames_column]
+    filtered_data[metric_column] = filtered_data[metric_column]*np.log(filtered_data[frames_column])
 
     # Sort by Simpson's Diversity Index in descending order
     sorted_data = filtered_data.sort_values(by='simpsons_diversity', ascending=False)
