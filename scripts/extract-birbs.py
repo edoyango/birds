@@ -357,10 +357,8 @@ def video_writer_worker(
     # start reading frames from master
     wait_counter = sys.maxsize
     while True:
-        res = queue.get()
-        if res is None:
-            break
-        else:
+        res = queue.get(timeout=10) # expecting frames to come in 10fps
+        try:
             bird_detected = res["classes"] is not None
             wait_counter = 0 if bird_detected else wait_counter + 1
             if wait_counter < wait_limit:
@@ -371,6 +369,10 @@ def video_writer_worker(
                 )
             elif output_video and output_video.isOpened():
                 output_video.release()
+
+        # get returns ValueError when queue is closed
+        except ValueError:
+            break
 
 
 if __name__ == "__main__":
@@ -469,47 +471,54 @@ Beginning processing...
     )
     worker.start()
 
-    # begin reading
-    suc = True
-    iframe = 0
-    while suc and iframe < total_frames:
+    # start try except finally clause for handling of multiprocessing
+    try:
+        # begin reading
+        suc = True
+        iframe = 0
+        while suc and iframe < total_frames:
 
-        # read frame from input feed
-        suc, frame = cap.read()
+            # read frame from input feed
+            suc, frame = cap.read()
 
-        if not suc:
-            raise ("Error reading frame from input feed.")
+            if not suc:
+                raise ("Error reading frame from input feed.")
 
-        # inference
-        inf_res = model.infer(frame, anchors, IMG_SIZE, NMS_THRESH)
+            # inference
+            inf_res = model.infer(frame, anchors, IMG_SIZE, NMS_THRESH)
 
-        # print number of detections to terminal
-        print(
-            f"frame {iframe} {0 if inf_res.classes is None else len(inf_res.classes)} birds",
-            end="\r",
-        )
+            # print number of detections to terminal
+            print(
+                f"frame {iframe} {0 if inf_res.classes is None else len(inf_res.classes)} birds",
+                end="\r",
+            )
 
-        # check video writer worker is still alive
-        if worker.exitcode:
-            worker.close()
-            raise RuntimeError(f"Worker has died with error code {worker.exitcode}")
+            # check video writer worker is still alive
+            if worker.exitcode:
+                worker.close()
+                raise RuntimeError(f"Worker has died with error code {worker.exitcode}")
 
-        # send frame and classes to video worker
-        frame_queue.put(
-            {
-                "classes": (
-                    inf_res.classes.copy() if inf_res.classes is not None else None
-                ),
-                "drawn image": inf_res.draw(CLASSES, conf=False).copy(),
-                "original image": frame.copy(),
-            }
-        )
+            # send frame and classes to video worker
+            frame_queue.put(
+                {
+                    "classes": (
+                        inf_res.classes.copy() if inf_res.classes is not None else None
+                    ),
+                    "drawn image": inf_res.draw(CLASSES, conf=False).copy(),
+                    "original image": frame.copy(),
+                }
+            )
 
-        iframe += 1
+            iframe += 1
 
-    # send signal to end video writeing
-    frame_queue.put(None)
+    finally:
+        # release cap (done first so any other process can use it asap)
+        cap.release()
 
-    # release model and capture
-    model.release()
-    cap.release()
+        # release model
+        model.release()
+
+        # send signal to end video writeing and stop worker
+        frame_queue.close()
+        worker.join()
+
