@@ -373,6 +373,9 @@ def video_writer_worker(
         # get returns ValueError when queue is closed
         except ValueError:
             break
+        # catch get timeout
+        except multiprocessing.Empty:
+            break
 
 
 if __name__ == "__main__":
