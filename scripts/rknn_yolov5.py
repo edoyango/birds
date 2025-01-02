@@ -5,17 +5,17 @@ from pathlib import Path
 from typing import Tuple, List
 from rknn.api import RKNN
 
-# a mostly random collection of colours
+# High-contrast colours (BGR)
 CLASS_COLOURS = (
-    ( 64, 224, 208), # Blackbird
+    (208, 224, 64), # Blackbird
     (255,   0, 255), # Butcherbird
-    (255, 215,   0), # Currawong
-    (  0,   0, 255), # Dove
-    (255, 165,   0), # Lorikeet
-    (  0, 255, 255), # Myna
+    (  0, 215, 255), # Currawong
+    (255,   0,   0), # Dove
+    (  0, 165, 255), # Lorikeet
+    (255, 255,   0), # Myna
     (128,   0, 128), # Sparrow
-    (255, 255,   0), # Starling
-    (255,   0,   0), # Wattlebird
+    (  0, 255, 255), # Starling
+    (  0,   0, 255), # Wattlebird
 )
 
 
