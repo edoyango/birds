@@ -6,7 +6,7 @@ app = Flask(__name__)
 # Function to parse NPU load data
 def parse_npu_load():
     try:
-        with open('/sys/kernel/debug/rknpu/load', 'r') as file:
+        with open('/rknpu-load.txt', 'r') as file:
             data = file.read()
         # Use regex to extract load percentages for each core
         pattern = r"Core(\d+):\s*(\d+)%"
