@@ -9,6 +9,7 @@ import random
 
 import numpy as np
 import multiprocessing as mp
+from queue import Empty
 
 from rknn_yolov5 import RKNN_model
 
@@ -357,8 +358,8 @@ def video_writer_worker(
     # start reading frames from master
     wait_counter = sys.maxsize
     while True:
-        res = queue.get(timeout=10) # expecting frames to come in 10fps
         try:
+            res = queue.get(timeout=10) # expecting frames to come in 10fps
             bird_detected = res["classes"] is not None
             wait_counter = 0 if bird_detected else wait_counter + 1
             if wait_counter < wait_limit:
@@ -374,7 +375,7 @@ def video_writer_worker(
         except ValueError:
             break
         # catch get timeout
-        except multiprocessing.Empty:
+        except Empty:
             break
 
 
