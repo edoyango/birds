@@ -36,7 +36,6 @@ CLASSES = (
 
 FFMPEG_CMD = "ffmpeg -y -hide_banner -loglevel error -i {input_video} -init_hw_device rkmpp=hw -filter_hw_device hw -vf hwupload,scale_rkrga=w=864:h=486 -c:v hevc_rkmpp -qp_init 20 {output_video}"
 
-
 def open_video(vname: Path) -> cv2.VideoCapture:
     """
     Opens a video file for reading and sets the video capture properties.
@@ -138,6 +137,7 @@ class detected_bird_video:
         width: int,
         height: int,
         minframes: int,
+        p_keep: float,
         prefix: str,
     ) -> None:
         """
@@ -173,10 +173,13 @@ class detected_bird_video:
         self.width = width
         self.height = height
         self.minframes = minframes
+        self.p_keep = p_keep
 
         # paths
         self.trigger_vid_path = self.trigger_dir / f"trigger-{self.vid_name}.mp4"
         self.original_vid_path = self.original_dir / f"original-{self.vid_name}.mp4"
+        self.compressed_original_vid_path = self.original_vid_path.parent / (self.original_vid_path.stem+"-compressed"+self.original_vid_path.suffix)
+        self.compressed_trigger_vid_path = self.trigger_vid_path.parent / (self.trigger_vid_path.stem+"-compressed"+self.trigger_vid_path.suffix)
         self.trigger_firstframe_path = (
             self.trigger_firstframes_dir / f"trigger-{self.vid_name}.jpg"
         )
@@ -185,25 +188,19 @@ class detected_bird_video:
         )
         self.meta_csv = Path(output_path) / "meta.csv"  # stores all video metadata
 
-        # open video
-        self.cap_trigger = cv2.VideoWriter(
-            self.trigger_vid_path,
-            cv2.VideoWriter_fourcc(*"mp4v"),
-            self.fps,
-            (self.width, self.height),
+        # get video writer worker ready
+        self.frame_queue = mp.Queue()
+        self.worker = mp.Process(
+            target=video_writer_worker,
+            args=(self.frame_queue, self.fps, self.width, self.height, self.trigger_vid_path, self.compressed_trigger_vid_path, self.original_vid_path, self.compressed_original_vid_path, self.minframes, p_keep)
         )
-        self.cap_original = cv2.VideoWriter(
-            self.original_vid_path,
-            cv2.VideoWriter_fourcc(*"mp4v"),
-            self.fps,
-            (self.width, self.height),
-        )
+        self.worker.start()
 
         # initialise output video metadata
         self.nframes = 0
         self.total_instances = 0
         self.total_class_count = {c: 0 for c in CLASSES}
-        self.opened = self.cap_trigger.isOpened() and self.cap_original.isOpened()
+        self.opened = self.worker.is_alive()
         if not self.opened:
             raise RuntimeError("Problem opening trigger or original video")
 
@@ -225,9 +222,19 @@ class detected_bird_video:
         if self.nframes == 0:
             cv2.imwrite(self.trigger_firstframe_path, trigger_frame)
             cv2.imwrite(self.original_firstframe_path, original_frame)
+        
+        # check video writer worker is still alive
+        if self.worker.exitcode:
+            self.worker.join()
+            raise RuntimeError(f"Worker has died with error code {self.worker.exitcode}")
 
-        self.cap_trigger.write(trigger_frame)
-        self.cap_original.write(original_frame)
+        self.frame_queue.put(
+            {
+                "trigger_frame": trigger_frame,
+                "original_frame": original_frame,
+                "classes": classes
+             }
+        )
 
         self.nframes += 1
 
@@ -236,7 +243,7 @@ class detected_bird_video:
             self.total_class_count[k] += v
             self.total_instances += v
 
-    def release(self, p_keep: float = 0.9) -> None:
+    def release(self) -> None:
         """Release resources and save metadata.
         This method performs the following operations:
         1. Saves metadata to a CSV file including video paths, frame counts, and object instances
@@ -255,15 +262,16 @@ class detected_bird_video:
             AssertionError: If video compression fails (non-zero FFMPEG return code)
         """
 
+        # close the queue so worker knows to finish
+        self.frame_queue.put("DONE")
+
         # initialise row and header
-        compressed_trigger_vid_path = self.trigger_vid_path.parent / (self.trigger_vid_path.stem+"-compressed"+self.trigger_vid_path.suffix)
-        compressed_original_vid_path = self.original_vid_path.parent / (self.original_vid_path.stem+"-compressed"+self.original_vid_path.suffix)
         row = [
             "N/A",
             "N/A",
-            compressed_original_vid_path,
+            self.compressed_original_vid_path,
             self.original_firstframe_path,
-            compressed_trigger_vid_path,
+            self.compressed_trigger_vid_path,
             self.trigger_firstframe_path,
             self.nframes,
             self.total_instances / self.nframes,
@@ -295,30 +303,6 @@ class detected_bird_video:
                 csvwriter.writerow(header)
                 csvwriter.writerow(row)
 
-        # close caps
-        self.cap_trigger.release()
-        self.cap_original.release()
-
-        # compress output videos, removing if they don't meet the minframes threshold
-        if self.nframes < self.minframes:
-            self.trigger_vid_path.unlink(missing_ok=True)
-            self.original_vid_path.unlink(missing_ok=True)
-        else:
-            # randomly keep fullres video for training
-            if random.random() < p_keep:
-                err = os.system(
-                    f"""{FFMPEG_CMD.format(input_video=self.trigger_vid_path, output_video=compressed_trigger_vid_path)} && rm {self.trigger_vid_path}
-                        {FFMPEG_CMD.format(input_video=self.original_vid_path, output_video=compressed_original_vid_path)} && rm {self.original_vid_path}
-                    """
-                )
-            else:
-                err = os.system(
-                    f"""{FFMPEG_CMD.format(input_video=self.trigger_vid_path, output_video=compressed_trigger_vid_path)}
-                        {FFMPEG_CMD.format(input_video=self.original_vid_path, output_video=compressed_original_vid_path)}
-                    """
-                )
-            assert err == 0, "Video compression failed."
-
         # tag as closed
         self.opened = False
 
@@ -330,7 +314,7 @@ class detected_bird_video:
 
 
 def video_writer_worker(
-    queue: mp.Queue, w: int, h: int, wait_limit: int, output_path: Path, video_prefix: str = ""
+    queue: mp.Queue, fps: int, w: int, h: int, trigger_path: Path, compressed_trigger_path: Path, original_path: Path, compressed_original_path: Path, minframes: int, p_keep: float = 0.9
 ) -> None:
     """Process a video stream and write frames with detected birds.
 
@@ -352,31 +336,60 @@ def video_writer_worker(
     wait_limit frames, it closes the current output video file.
     """
 
-    # initialize output video
-    output_video = None
+    # open caps
+    cap_trigger = cv2.VideoWriter(
+        trigger_path,
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (w, h)
+    )
+    cap_original = cv2.VideoWriter(
+        original_path,
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        (w, h),
+    )
 
     # start reading frames from master
-    wait_counter = sys.maxsize
+    nframes = 0
     while True:
-        try:
-            res = queue.get(timeout=10) # expecting frames to come in 10fps
-            bird_detected = res["classes"] is not None
-            wait_counter = 0 if bird_detected else wait_counter + 1
-            if wait_counter < wait_limit:
-                if not output_video or not output_video.isOpened():
-                    output_video = detected_bird_video(output_path, 10, w, h, 50, video_prefix)
-                output_video.write(
-                    res["drawn image"], res["original image"], res["classes"]
-                )
-            elif output_video and output_video.isOpened():
-                output_video.release()
+        res = queue.get(timeout=10) # expecting frames to come in 10fps
+        
+        # handle result
+        if res == "DONE":
+            # release output video capture objects
+            cap_trigger.release()
+            cap_original.release()
 
-        # get returns ValueError when queue is closed
-        except ValueError:
+            # compress output videos, removing if they don't meet the minframes threshold
+            if nframes < minframes:
+                trigger_path.unlink(missing_ok=True)
+                original_path.unlink(missing_ok=True)
+            else:
+                # randomly keep fullres video for training
+                if random.random() < p_keep:
+                    err = os.system(
+                        f"""{FFMPEG_CMD.format(input_video=trigger_path, output_video=compressed_trigger_path)} && rm {trigger_path}
+                            {FFMPEG_CMD.format(input_video=original_path, output_video=compressed_original_path)} && rm {original_path}
+                        """
+                    )
+                else:
+                    err = os.system(
+                        f"""{FFMPEG_CMD.format(input_video=trigger_path, output_video=compressed_trigger_path)}
+                            {FFMPEG_CMD.format(input_video=original_path, output_video=compressed_original_path)}
+                        """
+                    )
+                assert err==0, "Error compressing output videos."
+            # break loop
             break
-        # catch get timeout
-        except Empty:
-            break
+        else:
+            cap_trigger.write(res["trigger_frame"])
+            cap_original.write(res["original_frame"])
+            nframes += 1
+
+        # # catch get timeout
+        # except Empty:
+        #     cap_trigger.release(
 
 
 if __name__ == "__main__":
@@ -467,19 +480,15 @@ Beginning processing...
 """
     )
 
-    # initiate video writer
-    frame_queue = mp.Queue()
-    worker = mp.Process(
-        target=video_writer_worker,
-        args=(frame_queue, w, h, wait_limit, args.output_dir, args.video_name_prefix),
-    )
-    worker.start()
+    videos_to_wait = []
 
     # start try except finally clause for handling of multiprocessing
     try:
         # begin reading
         suc = True
         iframe = 0
+        wait_counter = sys.maxsize
+        output_video = None
         while suc and iframe < total_frames:
 
             # read frame from input feed
@@ -491,29 +500,37 @@ Beginning processing...
             # inference
             inf_res = model.infer(frame, anchors, IMG_SIZE, NMS_THRESH)
 
+            bird_detected = inf_res.classes is not None
+            wait_counter = 0 if bird_detected else wait_counter + 1
+
             # print number of detections to terminal
             print(
-                f"frame {iframe} {0 if inf_res.classes is None else len(inf_res.classes)} birds",
+                f"frame {iframe} {len(inf_res.classes) if bird_detected else 0} birds",
                 end="\r",
             )
 
-            # check video writer worker is still alive
-            if worker.exitcode:
-                worker.close()
-                raise RuntimeError(f"Worker has died with error code {worker.exitcode}")
-
-            # send frame and classes to video worker
-            frame_queue.put(
-                {
-                    "classes": (
-                        inf_res.classes.copy() if inf_res.classes is not None else None
-                    ),
-                    "drawn image": inf_res.draw(CLASSES, conf=False).copy(),
-                    "original image": frame.copy(),
-                }
-            )
+            if wait_counter < wait_limit:
+                if not output_video or not output_video.isOpened():
+                    output_video = detected_bird_video(args.output_dir, 10, w, h, 50, 0.9, args.video_name_prefix)
+                output_video.write(
+                    trigger_frame = inf_res.draw(CLASSES, conf=False).copy(),
+                    original_frame = frame.copy(),
+                    classes = inf_res.classes.copy() if inf_res.classes is not None else None
+                )
+            elif output_video and output_video.isOpened():
+                output_video.release()
+                videos_to_wait.append(output_video)
 
             iframe += 1
+
+            # cleanup any finished video writer workers
+            to_keep = []
+            for i, v in enumerate(videos_to_wait):
+                if v.worker.exitcode is not None:
+                    v.worker.join()
+                else:
+                    to_keep.append(i)
+            videos_to_wait[:] = [videos_to_wait[i] for i in to_keep]
 
     finally:
         # release cap (done first so any other process can use it asap)
@@ -522,7 +539,7 @@ Beginning processing...
         # release model
         model.release()
 
-        # send signal to end video writeing and stop worker
-        frame_queue.close()
-        worker.join()
-
+        # close video if its opened
+        if output_video and output_video.isOpened():
+            output_video.release()
+        
