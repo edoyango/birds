@@ -64,8 +64,9 @@ COPY --from=builder /usr/lib64/librknnrt.so /usr/lib64/librknnrt.so
 
 # copy files needed for inference
 COPY ./scripts /app
-COPY ./models /app/models
+COPY ./models/yolov5-birbs.rknn /app/models/yolov5-birbs.rknn
+COPY ./utils/docker-entrypoint.sh /app/entrypoint.sh
 WORKDIR /app
 
 # run bird extraction as default cmd
-CMD ["python", "/app/extract-birds.py", "--model_path", "/app/models/yolov5-birbs.rknn", "--video_path", "/dev/video0", "--anchors", "/app/anchors.txt"]
+ENTRYPOINT ["/app/entrypoint.sh"]
