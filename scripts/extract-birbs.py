@@ -36,6 +36,7 @@ CLASSES = (
 
 FFMPEG_CMD = "ffmpeg -y -hide_banner -loglevel error -i {input_video} -init_hw_device rkmpp=hw -filter_hw_device hw -vf hwupload,scale_rkrga=w=864:h=486 -c:v hevc_rkmpp -qp_init 20 {output_video}"
 
+
 def open_video(vname: Path) -> cv2.VideoCapture:
     """
     Opens a video file for reading and sets the video capture properties.
@@ -97,37 +98,35 @@ def count_detections(classes: np.ndarray) -> dict:
 
 class detected_bird_video:
     """
-    Class to handle detected bird video processing, including writing frames, saving metadata, and compressing videos.
+    A class to manage video processing for detected bird instances, handling writing,
+    metadata collection, and compression.
+
     Attributes:
-        vid_name (str): Name of the video file based on the current timestamp and prefix.
-        trigger_dir (Path): Directory to save trigger videos.
-        trigger_firstframes_dir (Path): Directory to save first frames of trigger videos.
-        original_dir (Path): Directory to save original videos.
-        original_firstframes_dir (Path): Directory to save first frames of original videos.
-        fps (int): Frames per second of the video.
-        width (int): Width of the video frame.
-        height (int): Height of the video frame.
-        minframes (int): Minimum number of frames required to keep the video.
-        trigger_vid_path (Path): Path to the trigger video file.
-        original_vid_path (Path): Path to the original video file.
-        trigger_firstframe_path (Path): Path to the first frame image of the trigger video.
-        original_firstframe_path (Path): Path to the first frame image of the original video.
-        meta_csv (Path): Path to the CSV file storing video metadata.
-        cap_trigger (cv2.VideoWriter): OpenCV VideoWriter object for the trigger video.
-        cap_original (cv2.VideoWriter): OpenCV VideoWriter object for the original video.
-        nframes (int): Number of frames written to the video.
-        total_instances (int): Total number of detected instances.
-        total_class_count (dict): Dictionary storing the count of each detected class.
-        opened (bool): Flag indicating if the video writers are opened successfully.
+        vid_name (str): The generated name for the video, based on the current timestamp.
+        fps (float): Frames per second for the output videos.
+        width (int): Width of the video frames.
+        height (int): Height of the video frames.
+        minframes (int): Minimum number of frames required to retain output videos.
+        p_keep (float): Probability of retaining uncompressed videos for training purposes.
+        trigger_vid_path (Path): Path to save the uncompressed trigger video.
+        original_vid_path (Path): Path to save the uncompressed original video.
+        compressed_original_vid_path (Path): Path to save the compressed original video.
+        compressed_trigger_vid_path (Path): Path to save the compressed trigger video.
+        trigger_firstframe_path (Path): Path to save the first frame of the trigger video.
+        original_firstframe_path (Path): Path to save the first frame of the original video.
+        meta_csv (Path): Path to save the metadata CSV file for all processed videos.
+        nframes (int): Total number of frames written to the video.
+        total_instances (int): Total number of detected instances across all frames.
+        total_class_count (dict): Dictionary containing the count of detected instances per class.
+        opened (bool): Indicates whether the video writer worker is alive and processing frames.
+
     Methods:
-        __init__(self, output_path, fps, width, height, minframes, prefix):
-            Initializes the detected_bird_video object with the given parameters and sets up directories and video writers.
-        write(self, trigger_frame, original_frame, classes):
-            Writes trigger frame and original frame to respective video writers and updates class counts.
-        release(self, p_keep=0.9):
-            Releases resources and saves metadata. Handles video compression and cleanup based on frame count threshold.
-        isOpened(self):
-            Helper function to indicate if videos are open.
+        write(trigger_frame, original_frame, classes):
+            Write frames and update instance counts.
+        release():
+            Finalize the video, write metadata, and close resources.
+        isOpened():
+            Check if the video writer worker is still active.
     """
 
     def __init__(
@@ -141,16 +140,19 @@ class detected_bird_video:
         prefix: str,
     ) -> None:
         """
-        Initialize the video extraction and processing class.
+        Initialize the video processor for bird detection.
+
         Args:
-            output_path (str): The base directory where output videos and metadata will be saved.
-            fps (int): Frames per second for the output videos.
-            width (int): Width of the output video frames.
-            height (int): Height of the output video frames.
-            minframes (int): Minimum number of frames required for processing.
-            prefix (str): Prefix for naming the output video files.
+            output_path (Path): Directory to store output videos and metadata.
+            fps (float): Frames per second for the output videos.
+            width (int): Width of the video frames.
+            height (int): Height of the video frames.
+            minframes (int): Minimum number of frames required to retain output videos.
+            p_keep (float): Probability of retaining uncompressed videos for training purposes.
+            prefix (str): Prefix for generated video names.
+
         Raises:
-            RuntimeError: If there is a problem opening the trigger or original video files.
+            RuntimeError: If the video writer worker fails to initialize.
         """
 
         # define video name
@@ -178,8 +180,12 @@ class detected_bird_video:
         # paths
         self.trigger_vid_path = self.trigger_dir / f"trigger-{self.vid_name}.mp4"
         self.original_vid_path = self.original_dir / f"original-{self.vid_name}.mp4"
-        self.compressed_original_vid_path = self.original_vid_path.parent / (self.original_vid_path.stem+"-compressed"+self.original_vid_path.suffix)
-        self.compressed_trigger_vid_path = self.trigger_vid_path.parent / (self.trigger_vid_path.stem+"-compressed"+self.trigger_vid_path.suffix)
+        self.compressed_original_vid_path = self.original_vid_path.parent / (
+            self.original_vid_path.stem + "-compressed" + self.original_vid_path.suffix
+        )
+        self.compressed_trigger_vid_path = self.trigger_vid_path.parent / (
+            self.trigger_vid_path.stem + "-compressed" + self.trigger_vid_path.suffix
+        )
         self.trigger_firstframe_path = (
             self.trigger_firstframes_dir / f"trigger-{self.vid_name}.jpg"
         )
@@ -192,7 +198,18 @@ class detected_bird_video:
         self.frame_queue = mp.Queue()
         self.worker = mp.Process(
             target=video_writer_worker,
-            args=(self.frame_queue, self.fps, self.width, self.height, self.trigger_vid_path, self.compressed_trigger_vid_path, self.original_vid_path, self.compressed_original_vid_path, self.minframes, p_keep)
+            args=(
+                self.frame_queue,
+                self.fps,
+                self.width,
+                self.height,
+                self.trigger_vid_path,
+                self.compressed_trigger_vid_path,
+                self.original_vid_path,
+                self.compressed_original_vid_path,
+                self.minframes,
+                p_keep,
+            ),
         )
         self.worker.start()
 
@@ -208,32 +225,34 @@ class detected_bird_video:
         self, trigger_frame: np.ndarray, original_frame: np.ndarray, classes: np.ndarray
     ) -> None:
         """
-        Writes trigger frame and original frame to respective video writers and updates class counts.
+        Write frames to the video and update instance statistics.
+
         Args:
-            trigger_frame (numpy.ndarray): Frame with highlighted detections/triggers
-            original_frame (numpy.ndarray): Original unmodified frame
-            classes (list, optional): List of detected object classes. Defaults to None.
-        Notes:
-            - If first frame (nframes=0), saves individual images of both trigger and original frames
-            - Updates running totals of detected object classes and total instance counts
-            - Uses OpenCV (cv2) for writing frames
+            trigger_frame (np.ndarray): Frame corresponding to the trigger video.
+            original_frame (np.ndarray): Frame corresponding to the original video.
+            classes (np.ndarray): Array of class detections for the current frame.
+
+        Raises:
+            RuntimeError: If the video writer worker process terminates unexpectedly.
         """
 
         if self.nframes == 0:
             cv2.imwrite(self.trigger_firstframe_path, trigger_frame)
             cv2.imwrite(self.original_firstframe_path, original_frame)
-        
+
         # check video writer worker is still alive
         if self.worker.exitcode:
             self.worker.join()
-            raise RuntimeError(f"Worker has died with error code {self.worker.exitcode}")
+            raise RuntimeError(
+                f"Worker has died with error code {self.worker.exitcode}"
+            )
 
         self.frame_queue.put(
             {
                 "trigger_frame": trigger_frame,
                 "original_frame": original_frame,
-                "classes": classes
-             }
+                "classes": classes,
+            }
         )
 
         self.nframes += 1
@@ -244,22 +263,13 @@ class detected_bird_video:
             self.total_instances += v
 
     def release(self) -> None:
-        """Release resources and save metadata.
-        This method performs the following operations:
-        1. Saves metadata to a CSV file including video paths, frame counts, and object instances
-        2. Releases video capture objects
-        3. Handles video compression and cleanup based on frame count threshold
-        4. Marks the instance as closed
-        Args:
-            p_keep (float): Probability of keeping the full resolution video for training (default 0.9)
-                            If random value > p_keep, original videos are removed after compression
-        Notes
-            - Videos shorter than minframes threshold are deleted
-            - Longer videos are compressed using FFMPEG
-            - Metadata is appended to existing CSV if present, otherwise creates new file
-            - Sets self.opened to False when complete
-        Raises
-            AssertionError: If video compression fails (non-zero FFMPEG return code)
+        """
+        Finalize video processing, write metadata, and release resources.
+
+        Notes:
+            - Compresses output videos using an external FFMPEG command.
+            - Deletes uncompressed videos based on the `minframes` threshold and `p_keep` probability.
+            - Appends metadata to an existing CSV file or creates a new one.
         """
 
         # close the queue so worker knows to finish
@@ -308,40 +318,60 @@ class detected_bird_video:
 
     def isOpened(self) -> bool:
         """
-        Helper function to indicate if videos are open.
+        Check if the video writer worker process is still active.
+
+        Returns:
+            bool: True if the worker process is alive, False otherwise.
         """
         return self.opened
 
 
 def video_writer_worker(
-    queue: mp.Queue, fps: int, w: int, h: int, trigger_path: Path, compressed_trigger_path: Path, original_path: Path, compressed_original_path: Path, minframes: int, p_keep: float = 0.9
+    queue: mp.Queue,
+    fps: int,
+    w: int,
+    h: int,
+    trigger_path: Path,
+    compressed_trigger_path: Path,
+    original_path: Path,
+    compressed_original_path: Path,
+    minframes: int,
+    p_keep: float = 0.9,
 ) -> None:
-    """Process a video stream and write frames with detected birds.
-
-    This function continuously reads frames from a queue and writes them to an output video
-    when birds are detected. It maintains a counter to track consecutive frames without
-    birds and stops writing after a specified wait limit is reached.
+    """
+    Processes video frames from a queue and writes them to video files. Handles compression and cleanup
+    based on frame count and probabilistic retention.
 
     Args:
-        queue (Queue): A queue containing dictionaries with frame data and detection results.
-            Each dictionary should contain 'classes', 'drawn image', and 'original image'.
-        w (int): Width of the output video frames.
-        h (int): Height of the output video frames.
-        wait_limit (int): Number of frames to continue recording after last bird detection.
-        output_path (str): Path where the output video files will be saved.
+        queue (mp.Queue): Multiprocessing queue used to receive video frames or termination signal ("DONE").
+        fps (int): Frames per second for the output videos.
+        w (int): Width of the video frames.
+        h (int): Height of the video frames.
+        trigger_path (Path): Path to save the uncompressed trigger video.
+        compressed_trigger_path (Path): Path to save the compressed trigger video.
+        original_path (Path): Path to save the uncompressed original video.
+        compressed_original_path (Path): Path to save the compressed original video.
+        minframes (int): Minimum number of frames required to retain output videos.
+        p_keep (float): Probability of retaining uncompressed videos for training purposes. Defaults to 0.9.
 
-    The function processes each frame until it receives None in the queue, which signals
-    termination. For each frame containing a bird detection, it resets the wait counter
-    and writes the frame to the output video. When no birds are detected for more than
-    wait_limit frames, it closes the current output video file.
+    Returns:
+        None
+
+    Raises:
+        AssertionError: If compression fails or the compression command (`FFMPEG_CMD`) returns a non-zero error code.
+
+    Notes:
+        - The function processes frames from the provided queue in real-time, writing them to two separate video files.
+        - Once the queue signals completion ("DONE"), the function:
+            - Releases video resources.
+            - Compresses the output videos using an external `FFMPEG_CMD`.
+            - Deletes uncompressed videos if the total frame count is below the `minframes` threshold.
+            - Retains uncompressed videos probabilistically based on `p_keep` if compression succeeds.
     """
 
     # open caps
     cap_trigger = cv2.VideoWriter(
-        trigger_path,
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        fps,
-        (w, h)
+        trigger_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h)
     )
     cap_original = cv2.VideoWriter(
         original_path,
@@ -353,8 +383,8 @@ def video_writer_worker(
     # start reading frames from master
     nframes = 0
     while True:
-        res = queue.get(timeout=10) # expecting frames to come in 10fps
-        
+        res = queue.get(timeout=10)  # expecting frames to come in 10fps
+
         # handle result
         if res == "DONE":
             # release output video capture objects
@@ -366,30 +396,22 @@ def video_writer_worker(
                 trigger_path.unlink(missing_ok=True)
                 original_path.unlink(missing_ok=True)
             else:
+                err = os.system(
+                    f"""{FFMPEG_CMD.format(input_video=trigger_path, output_video=compressed_trigger_path)}
+                        {FFMPEG_CMD.format(input_video=original_path, output_video=compressed_original_path)}
+                    """
+                )
                 # randomly keep fullres video for training
                 if random.random() < p_keep:
-                    err = os.system(
-                        f"""{FFMPEG_CMD.format(input_video=trigger_path, output_video=compressed_trigger_path)} && rm {trigger_path}
-                            {FFMPEG_CMD.format(input_video=original_path, output_video=compressed_original_path)} && rm {original_path}
-                        """
-                    )
-                else:
-                    err = os.system(
-                        f"""{FFMPEG_CMD.format(input_video=trigger_path, output_video=compressed_trigger_path)}
-                            {FFMPEG_CMD.format(input_video=original_path, output_video=compressed_original_path)}
-                        """
-                    )
-                assert err==0, "Error compressing output videos."
+                    trigger_path.unlink(missing_ok=True)
+                    original_path.unlink(missing_ok=True)
+                assert err == 0, "Error compressing output videos."
             # break loop
             break
         else:
             cap_trigger.write(res["trigger_frame"])
             cap_original.write(res["original_frame"])
             nframes += 1
-
-        # # catch get timeout
-        # except Empty:
-        #     cap_trigger.release(
 
 
 if __name__ == "__main__":
@@ -511,11 +533,15 @@ Beginning processing...
 
             if wait_counter < wait_limit:
                 if not output_video or not output_video.isOpened():
-                    output_video = detected_bird_video(args.output_dir, 10, w, h, 50, 0.9, args.video_name_prefix)
+                    output_video = detected_bird_video(
+                        args.output_dir, 10, w, h, 50, 0.9, args.video_name_prefix
+                    )
                 output_video.write(
-                    trigger_frame = inf_res.draw(CLASSES, conf=False).copy(),
-                    original_frame = frame.copy(),
-                    classes = inf_res.classes.copy() if inf_res.classes is not None else None
+                    trigger_frame=inf_res.draw(CLASSES, conf=False).copy(),
+                    original_frame=frame.copy(),
+                    classes=(
+                        inf_res.classes.copy() if inf_res.classes is not None else None
+                    ),
                 )
             elif output_video and output_video.isOpened():
                 output_video.release()
@@ -542,4 +568,3 @@ Beginning processing...
         # close video if its opened
         if output_video and output_video.isOpened():
             output_video.release()
-        
