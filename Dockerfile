@@ -45,7 +45,7 @@ RUN cd /ffmpeg-dev && \
 FROM python:3.10-slim AS runtime
 
 # get runtime packages needed for ffmpeg
-RUN apt-get update && apt-get install libdrm2 libgcc-s1 libstdc++6 -y && apt-get clean -y && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install libdrm2 libgcc-s1 libstdc++6 gifsicle -y && apt-get clean -y && rm -rf /var/lib/apt/lists/*
 
 # Copy over runtime files from builder image
 ## /usr/local will contain all pip-installed packages
