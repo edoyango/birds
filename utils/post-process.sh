@@ -4,7 +4,7 @@ set -eu
 
 today=$(date +%Y-%m-%d)
 output_dir=/bird-detections/$today
-vid_duration=20
+vid_duration=15
 
 . ~/rknn-venv/bin/activate
 
