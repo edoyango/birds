@@ -1,10 +1,7 @@
 FROM python:3.10-slim AS builder
 
 RUN apt-get update && apt-get install pkg-config libdrm-dev meson ninja-build git cmake g++ curl -y && apt-get clean -y && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir 'torch<1.14' 'torchvision<0.15' --index-url https://download.pytorch.org/whl/cpu 'numpy<2'  && \
-    pip install --no-cache-dir rknn-toolkit2 && \
-    pip uninstall -y opencv-python && \
-    pip install --no-cache-dir opencv-python-headless
+
 # get rknn driver
 RUN curl https://raw.githubusercontent.com/airockchip/rknn-toolkit2/refs/heads/master/rknpu2/runtime/Linux/librknn_api/aarch64/librknnrt.so -o /usr/lib/librknnrt.so && mkdir /usr/lib64 && ln -s /usr/lib/librknnrt.so /usr/lib64/librknnrt.so
 
@@ -41,6 +38,11 @@ RUN cd /ffmpeg-dev && \
     cd ffmpeg && \
     ./configure --prefix=/usr --enable-gpl --enable-version3 --enable-libdrm --enable-rkmpp --enable-rkrga && \
     make && make install
+
+RUN pip install --no-cache-dir 'torch<1.14' 'torchvision<0.15' --index-url https://download.pytorch.org/whl/cpu 'numpy<2' && \
+    pip install --no-cache-dir rknn-toolkit2 pandas flask && \
+    pip uninstall -y opencv-python && \
+    pip install --no-cache-dir opencv-python-headless
 
 FROM python:3.10-slim AS runtime
 
