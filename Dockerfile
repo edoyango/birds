@@ -40,7 +40,7 @@ RUN cd /ffmpeg-dev && \
     make && make install
 
 RUN pip install --no-cache-dir 'torch<1.14' 'torchvision<0.15' --index-url https://download.pytorch.org/whl/cpu 'numpy<2' && \
-    pip install --no-cache-dir rknn-toolkit2 pandas flask && \
+    pip install --no-cache-dir rknn-toolkit2 pandas flask pymysql cryptography && \
     pip uninstall -y opencv-python && \
     pip install --no-cache-dir opencv-python-headless
 

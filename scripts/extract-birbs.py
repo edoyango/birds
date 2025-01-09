@@ -13,6 +13,8 @@ from queue import Empty
 
 from rknn_yolov5 import RKNN_model
 
+import pymysql
+
 OBJ_THRESH = 0.5
 NMS_THRESH = 0.5
 
@@ -195,7 +197,7 @@ class detected_bird_video:
         self.meta_csv = Path(output_path) / "meta.csv"  # stores all video metadata
 
         # get video writer worker ready
-        self.frame_queue = mp.Queue()
+        self.frame_queue = mp.Queue(maxsize=100) # limit queue for when write becomes a problem
         self.worker = mp.Process(
             target=video_writer_worker,
             args=(
@@ -414,6 +416,31 @@ def video_writer_worker(
             nframes += 1
 
 
+def construct_query(d, row):
+    query = f"INSERT INTO metrics (time_column{', ' if row else ''} {', '.join(row.keys())}) VALUES ({', '.join(['%s'] * (len(row)+1))})"
+    sub = [d] + list(row.values())
+    return query, sub
+
+def mysql_worker(queue: mp.Queue, host, user, password, database):
+    i = 0
+    conn = pymysql.connect(host=host, user=user, password=password, database=database)
+    cursor = conn.cursor()
+    while True:
+        res = queue.get(timeout=10)
+        if res == "DONE":
+            break
+        else: # save result every second
+            now, row = res
+            if row is not None:
+                cursor.execute(*construct_query(now, count_detections(row)))
+            else:
+                cursor.execute(*construct_query(now, {}))
+        if i % 10 == 0: conn.commit() # commit every 10 rows
+        i += 1
+    conn.commit()
+    cursor.close()
+    conn.close()
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Detect birds from a video feed.")
     # basic params
@@ -432,8 +459,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--video",
         "-v",
-        type=str,
-        default="0",
+        type=Path,
+        default=Path("/dev/video0"),
         help="Video to watch. Can be either video device index, e.g. 0, or video file e.g. video.mkv.",
     )
     parser.add_argument(
@@ -477,6 +504,20 @@ if __name__ == "__main__":
     # init model
     model = RKNN_model(args.model_path, args.target, args.device_id)
 
+    # start worker to save data to mysql
+    mysql_queue = mp.Queue()
+    mysql_worker = mp.Process(
+        target=mysql_worker,
+        args=(
+            mysql_queue,
+            "localhost",
+            "root",
+            "potato",
+            "grafana_data",
+        ),
+    )
+    mysql_worker.start()
+
     # open video and define some metadata
     cap = open_video(args.video)
     fps = 10.0  # temporary fix
@@ -498,6 +539,8 @@ DETECTION MODEL: {args.model_path}
 WAIT LIMIT: {wait_limit} frames
 MAX FRAMES: {args.max_frames} frames
 
+Saving detections to MySQL database: http://localhost:3306, grafana_data.metrics ...
+
 Beginning processing...
 """
     )
@@ -513,6 +556,8 @@ Beginning processing...
         output_video = None
         while suc and iframe < total_frames:
 
+            now = datetime.datetime.now()
+
             # read frame from input feed
             suc, frame = cap.read()
 
@@ -521,6 +566,9 @@ Beginning processing...
 
             # inference
             inf_res = model.infer(frame, anchors, IMG_SIZE, NMS_THRESH)
+
+            # save to mysql queue once every second
+            if iframe % int(fps) == 0: mysql_queue.put((now.strftime("%Y-%m-%d %H:%M:%S"), inf_res.classes))
 
             bird_detected = inf_res.classes is not None
             wait_counter = 0 if bird_detected else wait_counter + 1
@@ -568,3 +616,6 @@ Beginning processing...
         # close video if its opened
         if output_video and output_video.isOpened():
             output_video.release()
+        
+        # close mysql worker
+        mysql_queue.put("DONE")
