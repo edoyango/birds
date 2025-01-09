@@ -1,6 +1,0 @@
-bootstrap: docker
-from: ultralytics/ultralytics:8.3.1
-
-%post
-  sed -i 's/w = \[0.0, 0.0, 0.1, 0.9\]/w = \[0.0, 0.0, 0.9, 0.1\]/g' /ultralytics/ultralytics/utils/metrics.py
-
