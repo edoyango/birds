@@ -3,13 +3,13 @@
 set -eu
 
 today=$(date +%Y-%m-%d)
-output_dir=/bird-detections/$today
+output_dir=/output/$today
 vid_duration=15
 
-. ~/rknn-venv/bin/activate
+# . ~/rknn-venv/bin/activate
 
 # 1. find best videos
-bestvids=$(~/birds/scripts/find-best-vids.py --csv "$output_dir/meta.csv" --num-videos 5 --duration $vid_duration)
+bestvids=$(/app/find-best-vids.py --csv "$output_dir/meta.csv" --num-videos 5 --duration $vid_duration)
 
 # 2. create gifs from best videos
 gifs2stack=""
@@ -28,7 +28,7 @@ do
 done
 
 # 3. stack gifs
-~/birds/scripts/stack-gifs.py /tmp/stacked.gif $gifs2stack
+/app/stack-gifs.py /tmp/stacked.gif $gifs2stack
 
 # 4. optimize gif
 gifsicle -O3 --lossy=35 -i /tmp/stacked.gif --colors 128 -o "$output_dir/sample.gif"
@@ -36,15 +36,15 @@ gifsicle -O3 --lossy=35 -i /tmp/stacked.gif --colors 128 -o "$output_dir/sample.
 # 5. send email
 ## create google drive link to triggers folder
 ## save list of birds
-birblist="$(~/birds/scripts/parse-instances.py "$output_dir/meta.csv")"
+birblist="$(/app/parse-instances.py "$output_dir/meta.csv")"
 ## send email
 export GMAIL_APP_PWD=bpcshpyjugjpmbvy
-~/birds/scripts/send_birb_summary.py \
+/app/send_birb_summary.py \
 	-s "Birb watcher update - $today" \
 	-i "$output_dir/sample.gif" \
 	eds.birb.watcher@gmail.com \
 	"Birb Watcher" \
-	birds/email-lists.csv \
+	/app/email-lists.csv \
 	"<html>
 <body>
 	<p>Hi,</p>
