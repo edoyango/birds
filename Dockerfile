@@ -66,7 +66,6 @@ COPY --from=builder /usr/lib64/librknnrt.so /usr/lib64/librknnrt.so
 
 # copy files needed for inference
 COPY ./scripts /app
-COPY ./models/yolov5-birbs.rknn /app/models/yolov5-birbs.rknn
 COPY ./utils/docker-entrypoint.sh /app/entrypoint.sh
 WORKDIR /app
 
