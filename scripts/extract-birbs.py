@@ -185,10 +185,10 @@ class detected_bird_video:
             self.trigger_vid_path.stem + "-compressed" + self.trigger_vid_path.suffix
         )
         self.trigger_firstframe_path = (
-            self.trigger_firstframes_dir / f"trigger-{self.vid_name}.jpg"
+            self.trigger_firstframes_dir / f"trigger-{self.vid_name}.png"
         )
         self.original_firstframe_path = (
-            self.original_firstframes_dir / f"original-{self.vid_name}.jpg"
+            self.original_firstframes_dir / f"original-{self.vid_name}.png"
         )
         self.meta_csv = Path(output_path) / "meta.csv"  # stores all video metadata
 
