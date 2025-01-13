@@ -37,7 +37,8 @@ CLASSES = (
     "Wattlebird",
 )
 
-FFMPEG_CMD = "ffmpeg -y -hide_banner -loglevel error -i {input_video} -init_hw_device rkmpp=hw -filter_hw_device hw -vf hwupload,scale_rkrga=w=864:h=486 -c:v hevc_rkmpp -qp_init 20 {output_video}"
+# add 1 to nice value so ffmpeg doesn't get in the way of the main processes
+FFMPEG_CMD = "nice -n 1 ffmpeg -y -hide_banner -loglevel error -i {input_video} -init_hw_device rkmpp=hw -filter_hw_device hw -vf hwupload,scale_rkrga=w=864:h=486 -c:v hevc_rkmpp -qp_init 20 {output_video}"
 
 
 def open_video(vname: Path) -> cv2.VideoCapture:
