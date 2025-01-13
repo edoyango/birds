@@ -6,6 +6,7 @@ import csv
 import datetime
 from pathlib import Path
 import random
+from collections import Counter
 
 import numpy as np
 import multiprocessing as mp
@@ -87,13 +88,7 @@ def count_detections(classes: np.ndarray) -> dict:
         dict: A dictionary where the keys are class names (from the global CLASSES dictionary) and the values are the counts of each class in the input list.
     """
 
-    counts = {}
-    for i in classes:
-        ii = int(i)
-        if counts.get(ii):
-            counts[ii] += 1
-        else:
-            counts[ii] = 1
+    counts = Counter(classes)
 
     return {CLASSES[k]: v for k, v in counts.items()}
 
