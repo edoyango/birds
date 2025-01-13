@@ -12,6 +12,7 @@ services:
       - '/:/host:ro,rslave'
     ports:
       - '9091:9091'
+    cpuset: 0-1
 
   rknpu_exporter:
     image: python:3.12-slim
@@ -25,6 +26,7 @@ services:
     command: sh -c "python -m pip install flask --no-cache-dir && python rknpu-exporter.py"
     restart: unless-stopped
     network_mode: host
+    cpuset: 0-1
   
   init_prometheus:
     image: quay.io/prometheus/prometheus
@@ -64,25 +66,9 @@ services:
     restart: unless-stopped
     network_mode: host
     user: '0'
-  
-  bird_detections_db:
-    image: mysql
-    container_name: bird_detections_db
-    volumes:
-      - /bird-detections/mysql-data:/var/lib/mysql
-      - ./cfg/init.sql:/docker-entrypoint-initdb.d/init.sql
-      - /etc/localtime:/etc/localtime:ro
-    environment:
-      - MYSQL_ROOT_PASSWORD=potato
-      - MYSQL_DATABASE=grafana_data
-      - MYSQL_USER=grafana_user
-      - MYSQL_PASSWORD=grafana_password
-    restart: unless-stopped
-    network_mode: host
+    cpuset: 0-1
 
   video0_extract:
-    depends_on:
-      - bird_detections_db
     image: ghcr.io/edoyango/birds
     container_name: video0-extract
     volumes:
@@ -100,11 +86,11 @@ services:
       - "/dev/video0"
       - "0"
       - "video0-"
+      - "9093"
     network_mode: host
+    cpuset: 2-7
   
   video2_extract:
-    depends_on:
-      - bird_detections_db
     image: ghcr.io/edoyango/birds
     container_name: video2-extract
     volumes:
@@ -122,4 +108,6 @@ services:
       - "/dev/video2"
       - "0"
       - "video2-"
+      - "9094"
     network_mode: host
+    cpuset: 2-7

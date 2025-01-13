@@ -14,7 +14,8 @@ from queue import Empty
 
 from rknn_yolov5 import RKNN_model
 
-import pymysql
+from flask import Flask, Response
+from prometheus_client import Gauge, generate_latest, CollectorRegistry, CONTENT_TYPE_LATEST
 
 OBJ_THRESH = 0.5
 NMS_THRESH = 0.5
@@ -89,7 +90,8 @@ def count_detections(classes: np.ndarray) -> dict:
         dict: A dictionary where the keys are class names (from the global CLASSES dictionary) and the values are the counts of each class in the input list.
     """
 
-    counts = Counter(classes)
+    counts = Counter({i: 0 for i in range(len(CLASSES))})
+    counts.update(classes)
 
     return {CLASSES[k]: v for k, v in counts.items()}
 
@@ -411,31 +413,30 @@ def video_writer_worker(
             cap_original.write(res["original_frame"])
             nframes += 1
 
+# Define Prometheus Gauges for metrics
+app = Flask(__name__)
+registry = CollectorRegistry()
+bird_gauge = Gauge(
+    "bird_species_count", 
+    "Number of birds per species", 
+    ["species", "video"], 
+    registry=registry
+)
 
-def construct_query(d, row):
-    query = f"INSERT INTO metrics (time_column{', ' if row else ''} {', '.join(row.keys())}) VALUES ({', '.join(['%s'] * (len(row)+1))})"
-    sub = [d] + list(row.values())
-    return query, sub
+# Flask route to serve metrics
+@app.route('/metrics')
+def metrics():
+    """Endpoint to expose Prometheus metrics."""
+    return Response(generate_latest(registry), content_type=CONTENT_TYPE_LATEST)
 
-def mysql_worker(queue: mp.Queue, host, user, password, database):
-    i = 0
-    conn = pymysql.connect(host=host, user=user, password=password, database=database)
-    cursor = conn.cursor()
-    while True:
-        res = queue.get(timeout=10)
-        if res == "DONE":
-            break
-        else: # save result every second
-            now, row = res
-            if row is not None:
-                cursor.execute(*construct_query(now, count_detections(row)))
-            else:
-                cursor.execute(*construct_query(now, {}))
-        if i % 10 == 0: conn.commit() # commit every 10 rows
-        i += 1
-    conn.commit()
-    cursor.close()
-    conn.close()
+def start_flask_app(shared_dict, video, port):
+    """Start the Flask app and periodically update Prometheus metrics."""
+    @app.before_request
+    def update_metrics():
+        """Update bird species metrics before each request."""
+        for species in CLASSES:
+            bird_gauge.labels(species=species, video=video).set(shared_dict[species])
+    app.run(host="localhost", port=port)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Detect birds from a video feed.")
@@ -488,6 +489,13 @@ if __name__ == "__main__":
         default="",
         help="Prefix for the output video files.",
     )
+    parser.add_argument(
+        "--metrics-port",
+        "-t",
+        type=int,
+        default=9093,
+        help="Port for metrics exporter to listen on."
+    )
 
     args = parser.parse_args()
 
@@ -500,19 +508,18 @@ if __name__ == "__main__":
     # init model
     model = RKNN_model(args.model_path, args.target, args.device_id)
 
-    # start worker to save data to mysql
-    mysql_queue = mp.Queue()
-    mysql_worker = mp.Process(
-        target=mysql_worker,
+    # start worker to broadcast data for prometheus
+    manager = mp.Manager()
+    shared_dict = manager.dict()
+    prom_exporter_worker = mp.Process(
+        target=start_flask_app,
         args=(
-            mysql_queue,
-            "localhost",
-            "root",
-            "potato",
-            "grafana_data",
+            shared_dict,
+            args.video,
+            args.metrics_port
         ),
     )
-    mysql_worker.start()
+    prom_exporter_worker.start()
 
     # open video and define some metadata
     cap = open_video(args.video)
@@ -552,8 +559,6 @@ Beginning processing...
         output_video = None
         while suc and iframe < total_frames:
 
-            now = datetime.datetime.now()
-
             # read frame from input feed
             suc, frame = cap.read()
 
@@ -564,7 +569,8 @@ Beginning processing...
             inf_res = model.infer(frame, anchors, IMG_SIZE, NMS_THRESH)
 
             # save to mysql queue once every second
-            if iframe % int(fps) == 0: mysql_queue.put((now.strftime("%Y-%m-%d %H:%M:%S"), inf_res.classes))
+            if iframe % int(fps) == 0: 
+                shared_dict.update(count_detections(inf_res.classes))
 
             bird_detected = inf_res.classes is not None
             wait_counter = 0 if bird_detected else wait_counter + 1
@@ -606,12 +612,15 @@ Beginning processing...
         # release cap (done first so any other process can use it asap)
         cap.release()
 
+        manager.shutdown()
+        
+        # close prometheus exporter
+        prom_exporter_worker.terminate()
+        prom_exporter_worker.join()
+
         # release model
         model.release()
 
         # close video if its opened
         if output_video and output_video.isOpened():
             output_video.release()
-        
-        # close mysql worker
-        mysql_queue.put("DONE")
