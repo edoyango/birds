@@ -66,6 +66,16 @@ services:
     cpuset: 0-1
     networks:
       - bird_net
+    environment:
+      - GF_RENDERING_SERVER_URL=http://renderer:8081/render
+      - GF_RENDERING_CALLBACK_URL=http://grafana:3000/
+      - GF_LOG_FILTERS=rendering:debug
+  renderer:
+    image: grafana/grafana-image-renderer
+    ports:
+      - 8081
+    networks:
+      - bird_net
 
   video0_extract:
     image: ghcr.io/edoyango/birds

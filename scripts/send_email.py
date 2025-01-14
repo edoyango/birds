@@ -47,7 +47,7 @@ def send_email_with_embedded_image(
     subject,
     body,
     format_dict,
-    imgpath,
+    imgpaths
 ):
 
     msg = EmailMessage()
@@ -58,22 +58,20 @@ def send_email_with_embedded_image(
 
     msg.set_content("")
 
-    image_cid = make_msgid()
-
-    format_dict["image_cid"] = image_cid[1:-1]
+    image_cids = []
+    for i, ip in enumerate(imgpaths):
+        image_cids.append(make_msgid())
+        format_dict[f"image_cid{i}"] = image_cids[i][1:-1]
 
     msg.add_alternative(body.format_map(format_dict), subtype="html")
 
     # now open the image and attach it to the email
-    with open(imgpath, "rb") as img:
-
-        # know the Content-Type of the image
-        maintype, subtype = mimetypes.guess_type(img.name)[0].split("/")
-
-        # attach it
-        msg.get_payload()[1].add_related(
-            img.read(), maintype=maintype, subtype=subtype, cid=image_cid
-        )
+    for i, ip in enumerate(imgpaths):
+        with open(ip, "rb") as img:
+            maintype, subtype = mimetypes.guess_type(img.name)[0].split("/")
+            msg.get_payload()[1].add_related(
+                img.read(), maintype=maintype, subtype=subtype, cid=image_cids[i]
+            )
 
     # Send the email
     _send(sender_email, pwd, recipient_email, msg.as_string())

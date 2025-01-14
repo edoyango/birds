@@ -72,7 +72,7 @@ if __name__ == "__main__":
         help="Email body text. Instances of \{FIRST\} and \{LAST\} will be replaced with first and last names, respectively. \{NAME\} will be replaced with full name.",
     )
     parser.add_argument("-s", "--subject", help="Email subject line (optional).")
-    parser.add_argument("-i", "--image", help="Path to image to send with the summary.")
+    parser.add_argument("-i", "--images", help="Path to image to send with the summary.", nargs="*")
 
     args = parser.parse_args()
 
@@ -89,5 +89,5 @@ if __name__ == "__main__":
         args.CSV,
         args.subject,
         args.body,
-        args.image,
+        args.images,
     )

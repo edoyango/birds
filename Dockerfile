@@ -47,7 +47,7 @@ RUN pip install --no-cache-dir 'torch<1.14' 'torchvision<0.15' --index-url https
 FROM python:3.10-slim AS runtime
 
 # get runtime packages needed for ffmpeg
-RUN apt-get update && apt-get install libdrm2 libgcc-s1 libstdc++6 gifsicle -y && apt-get clean -y && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install libdrm2 libgcc-s1 libstdc++6 gifsicle curl -y && apt-get clean -y && rm -rf /var/lib/apt/lists/*
 
 # Copy over runtime files from builder image
 ## /usr/local will contain all pip-installed packages

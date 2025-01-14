@@ -33,6 +33,9 @@ done
 # 4. optimize gif
 gifsicle -O3 --lossy=35 -i /tmp/stacked.gif --colors 128 -o "$output_dir/sample.gif"
 
+# 5. render panel
+curl -o "$output_dir/panel.png" 'admin:orangepi@grafana:3000/render/d-solo/de8twne7u2r5sc?orgId=1&from=now-12h&to=now&panelId=10&width=720&height=480&tz=Australia%2FSydney'
+
 # 5. send email
 ## create google drive link to triggers folder
 ## save list of birds
@@ -41,7 +44,6 @@ birblist="$(/app/parse-instances.py "$output_dir/meta.csv")"
 export GMAIL_APP_PWD=bpcshpyjugjpmbvy
 /app/send_birb_summary.py \
 	-s "Birb watcher update - $today" \
-	-i "$output_dir/sample.gif" \
 	eds.birb.watcher@gmail.com \
 	"Birb Watcher" \
 	/app/email-lists.csv \
@@ -52,12 +54,15 @@ export GMAIL_APP_PWD=bpcshpyjugjpmbvy
 	<ul>
 	$birblist
 	</ul>
-<p>Here's one of the videos with birds:</p>
-	<img src=\"cid:{image_cid}\">
+<p>Here's a heatmap of all the birds I saw throughout the day!</p>
+	<img src=\"cid:{image_cid1}\">
+<p>And here's one of the videos with birds:</p>
+	<img src=\"cid:{image_cid0}\">
 	<p>Hope you have a great day!</p>
 	<p>Regards,<br>Ed's Birb Watcher</p>
 </body>
-</html>"
+</html>" \
+	-i "$output_dir/sample.gif" "$output_dir/panel.png"
 
 # 6. upload to google drive
 #rclone -P move ~/bird-detections gdrive:birds/$today
