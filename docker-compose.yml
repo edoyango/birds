@@ -4,8 +4,7 @@ services:
     container_name: node_exporter
     command: 
       - '--path.rootfs=/host'
-      - '--web.listen-address=localhost:9091'
-    network_mode: host
+      - '--web.listen-address=:9091'
     pid: host
     restart: unless-stopped
     volumes:
@@ -13,20 +12,20 @@ services:
     ports:
       - '9091:9091'
     cpuset: 0-1
+    networks:
+      - bird_net
 
   rknpu_exporter:
-    image: python:3.12-slim
+    image: ghcr.io/edoyango/birds
     container_name: rknpu_exporter
     working_dir: /app
     volumes:
-      - ./scripts:/app
       - /sys/kernel/debug/rknpu/load:/rknpu-load.txt:ro
-    ports:
-      - '9092:9092'
-    command: sh -c "python -m pip install flask --no-cache-dir && python rknpu-exporter.py"
+    entrypoint: /app/rknpu-exporter.py
     restart: unless-stopped
-    network_mode: host
     cpuset: 0-1
+    networks:
+      - bird_net
   
   init_prometheus:
     image: quay.io/prometheus/prometheus
@@ -47,14 +46,13 @@ services:
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
-    ports:
-      - '9090:9090'
     depends_on:
       - node_exporter
       - rknpu_exporter
       - init_prometheus 
     restart: unless-stopped
-    network_mode: host
+    networks:
+      - bird_net
 
   grafana:
     image: grafana/grafana
@@ -64,9 +62,10 @@ services:
     ports:
       - '3000:3000'
     restart: unless-stopped
-    network_mode: host
     user: '0'
     cpuset: 0-1
+    networks:
+      - bird_net
 
   video0_extract:
     image: ghcr.io/edoyango/birds
@@ -87,8 +86,9 @@ services:
       - "0"
       - "video0-"
       - "9093"
-    network_mode: host
     cpuset: 2-7
+    networks:
+      - bird_net
   
   video2_extract:
     image: ghcr.io/edoyango/birds
@@ -109,5 +109,9 @@ services:
       - "0"
       - "video2-"
       - "9094"
-    network_mode: host
     cpuset: 2-7
+    networks:
+      - bird_net
+
+networks:
+  bird_net:

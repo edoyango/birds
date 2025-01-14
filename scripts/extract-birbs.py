@@ -436,7 +436,7 @@ def start_flask_app(shared_dict, video, port):
         """Update bird species metrics before each request."""
         for species in CLASSES:
             bird_gauge.labels(species=species, video=video).set(shared_dict[species])
-    app.run(host="localhost", port=port)
+    app.run(host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Detect birds from a video feed.")

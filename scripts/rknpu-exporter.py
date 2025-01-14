@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 from flask import Flask, Response
 import re
 
@@ -30,4 +32,4 @@ def metrics():
     return Response("\n".join(metrics), mimetype='text/plain')
 
 if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=9092)
+    app.run(host='0.0.0.0', port=9092)

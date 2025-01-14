@@ -30,16 +30,16 @@ scrape_configs:
   - job_name: 'node'
     scrape_interval: 2s
     static_configs:
-      - targets: ['localhost:9091']
+      - targets: ['node_exporter:9091']
   - job_name: 'rknpu'
     scrape_interval: 2s
     static_configs:
-      - targets: ['localhost:9092']
+      - targets: ['rknpu_exporter:9092']
   - job_name: 'bird_detections0'
     scrape_interval: 1s
     static_configs:
-      - targets: ['localhost:9093']
+      - targets: ['video0_extract:9093']
   - job_name: 'bird_detections2'
     scrape_interval: 1s
     static_configs:
-      - targets: ['localhost:9094']
+      - targets: ['video2_extract:9094']
