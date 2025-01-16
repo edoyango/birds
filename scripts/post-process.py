@@ -123,9 +123,9 @@ def main(
 {html_bird_list}
 </ul>
 <p>Here's a heatmap of all the birds I saw throughout the day!</p>
-<img src=\"cid:{{image_cid1}}\">
-<p>And here's one of the videos with birds:</p>
 <img src=\"cid:{{image_cid0}}\">
+<p>And here's one of the videos with birds:</p>
+<img src=\"cid:{{image_cid1}}\">
 <p>Hope you have a great day!</p>
 <p>Regards,<br>Ed's Birb Watcher</p>
 </body>
