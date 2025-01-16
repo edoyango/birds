@@ -4,9 +4,25 @@ import smtplib
 from email.message import EmailMessage
 from email.utils import make_msgid
 import mimetypes
+from pathlib import Path
 
 
 def _send(sender_email, pwd, recipient_email, msgstring):
+    """
+    Send an email via SMTP.
+
+    This function connects to the Gmail SMTP server, logs in with the provided sender email and
+    password, and sends an email to the recipient with the provided message string.
+
+    Parameters:
+    sender_email (str): Email address of the sender.
+    pwd (str): Password or application-specific password for the sender's email account.
+    recipient_email (str): Email address of the recipient.
+    msgstring (str): The full email message as a string, including headers and body.
+
+    Returns:
+    None
+    """
 
     with smtplib.SMTP("smtp.gmail.com", 587) as server:
         server.ehlo()
@@ -18,15 +34,34 @@ def _send(sender_email, pwd, recipient_email, msgstring):
 
 
 def send_email(
-    sender_name,
-    sender_email,
-    pwd,
-    recipient_name,
-    recipient_email,
-    subject,
-    body,
-    format_dict,
+    sender_name: str,
+    sender_email: str,
+    pwd: str,
+    recipient_name: str,
+    recipient_email: str,
+    subject: str,
+    body: str,
+    format_dict: dict[str, str],
 ):
+    """
+    Send a formatted email.
+
+    This function creates and sends an email using the provided sender and recipient information, subject, body content,
+    and a dictionary for formatting the body content.
+
+    Parameters:
+    sender_name (str): Name of the email sender.
+    sender_email (str): Email address of the sender.
+    pwd (str): Password or application-specific password for the sender's email account.
+    recipient_name (str): Name of the email recipient.
+    recipient_email (str): Email address of the recipient.
+    subject (str): Subject of the email.
+    body (str): Body content of the email.
+    format_dict (dict): Dictionary containing formatting information for the body content.
+
+    Returns:
+    None
+    """
 
     FROM = f"{sender_name} <{sender_email}>"
     TO = f"{recipient_name} <{recipient_email}>"
@@ -39,16 +74,37 @@ def send_email(
 
 
 def send_email_with_embedded_image(
-    sender_name,
-    sender_email,
-    pwd,
-    recipient_name,
-    recipient_email,
-    subject,
-    body,
-    format_dict,
-    imgpaths
+    sender_name: str,
+    sender_email: str,
+    pwd: str,
+    recipient_name: str,
+    recipient_email: str,
+    subject: str,
+    body: str,
+    format_dict: str,
+    imgpaths: list[Path],
 ):
+    """
+    Send an email with embedded images.
+
+    This function creates and sends an email with embedded images using the provided sender and
+    recipient information, subject, body content, and image file paths. The images are embedded
+    within the email body using content IDs.
+
+    Parameters:
+    sender_name (str): Name of the email sender.
+    sender_email (str): Email address of the sender.
+    pwd (str): Password or application-specific password for the sender's email account.
+    recipient_name (str): Name of the email recipient.
+    recipient_email (str): Email address of the recipient.
+    subject (str): Subject of the email.
+    body (str): HTML body content of the email.
+    format_dict (dict): Dictionary containing content IDs to be formatted into the email body.
+    imgpaths (list[Path]): List of paths to the image files to be embedded in the email.
+
+    Returns:
+    None
+    """
 
     msg = EmailMessage()
 

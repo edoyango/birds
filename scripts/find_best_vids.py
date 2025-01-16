@@ -5,41 +5,69 @@ import argparse
 from pathlib import Path
 
 WEIGHTS = {
-    "Blackbird": 4, 
-    "Butcherbird": 8, 
-    "Currawong": 7, 
-    "Dove": 1, 
-    "Lorikeet": 9, 
-    "Myna": 3, 
-    "Sparrow": 2, 
-    "Starling": 5, 
-    "Wattlebird": 6
+    "Blackbird": 4,
+    "Butcherbird": 8,
+    "Currawong": 7,
+    "Dove": 1,
+    "Lorikeet": 9,
+    "Myna": 3,
+    "Sparrow": 2,
+    "Starling": 5,
+    "Wattlebird": 6,
 }
 
-def calculate_simpsons_diversity(species_counts):
+
+def calculate_simpsons_diversity(species_counts: list[int]) -> float:
     """
     Calculate Simpson's Diversity Index for a video.
-    :param species_counts: List of species counts for the video.
-    :return: Simpson's Diversity Index.
+
+    Parameters:
+    species_counts: List of species counts for the video.
+
+    Returns:
+    float: Simpson's Diversity Index.
     """
     total_count = sum(species_counts)
     if total_count == 0:
         return 0  # Handle cases where no species are present
     proportions = [count / total_count for count in species_counts]
-    return 1 - sum(p ** 2 for p in proportions)
+    return 1 - sum(p**2 for p in proportions)
 
-def main(duration, num_videos, csv_path):
+
+def main(duration: float, num_videos: int, csv_path: Path) -> list[Path]:
+    """
+    Process a CSV file to filter and rank videos based on duration and Simpson's Diversity Index.
+
+    Parameters:
+    duration (float): Minimum duration of videos in seconds.
+    num_videos (int): Number of top videos to return.
+    csv_path (Path): Path to the CSV file containing video data.
+
+    Returns:
+    list: List of top video paths based on the Simpson's Diversity Index.
+    """
+
     # Load CSV file
     data = pd.read_csv(csv_path, header=0)  # No header assumed; adjust if needed
 
     # Extract relevant columns
     video_column = "trigger video path"  # 5th column (0-based index)
     frames_column = "nframes"  # 7th column (0-based index)
-    species_columns = ["Blackbird", "Butcherbird", "Currawong", "Dove", "Lorikeet", "Myna", "Sparrow", "Starling", "Wattlebird"]  # 9th column onward (0-based index)
-    metric_column = 'simpsons_diversity'
+    species_columns = [
+        "Blackbird",
+        "Butcherbird",
+        "Currawong",
+        "Dove",
+        "Lorikeet",
+        "Myna",
+        "Sparrow",
+        "Starling",
+        "Wattlebird",
+    ]  # 9th column onward (0-based index)
+    metric_column = "simpsons_diversity"
 
     # Filter rows by minimum duration
-    min_frames = duration*10 # assume 10 fps
+    min_frames = duration * 10  # assume 10 fps
     filtered_data = data[data[frames_column] >= min_frames].copy()
 
     # apply weights to species columns
@@ -51,26 +79,43 @@ def main(duration, num_videos, csv_path):
     )
 
     # weight simpson's diversity with no. of frames
-    filtered_data[metric_column] = filtered_data[metric_column]*np.log(filtered_data[frames_column])
+    filtered_data[metric_column] = filtered_data[metric_column] * np.log(
+        filtered_data[frames_column]
+    )
 
     # Sort by Simpson's Diversity Index in descending order
-    sorted_data = filtered_data.sort_values(by='simpsons_diversity', ascending=False)
+    sorted_data = filtered_data.sort_values(by="simpsons_diversity", ascending=False)
 
     # Select top n videos
     top_videos = [Path(v) for v in sorted_data[video_column].head(num_videos)]
 
     # Print the video names space-delimited
     return top_videos
-    
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Select videos based on diversity and duration.")
-    parser.add_argument("--duration", type=int, required=True, help="Minimum duration in seconds.", default=11)
-    parser.add_argument("--num-videos", type=int, required=True, help="Number of videos to select.", default=4)
-    parser.add_argument("--csv", type=str, default="meta.csv", help="Path to the input CSV file.")
+    parser = argparse.ArgumentParser(
+        description="Select videos based on diversity and duration."
+    )
+    parser.add_argument(
+        "--duration",
+        type=int,
+        required=True,
+        help="Minimum duration in seconds.",
+        default=11,
+    )
+    parser.add_argument(
+        "--num-videos",
+        type=int,
+        required=True,
+        help="Number of videos to select.",
+        default=4,
+    )
+    parser.add_argument(
+        "--csv", type=str, default="meta.csv", help="Path to the input CSV file."
+    )
     args = parser.parse_args()
 
     top_videos = main(args.duration, args.num_videos, args.csv)
 
     print(" ".join(top_videos.astype(str)))
-

@@ -2,9 +2,24 @@
 
 from send_email import send_email_with_embedded_image, send_email
 import pandas as pd
+from pathlib import Path
 
 
-def validate_df(df):
+def validate_df(df: pd.DataFrame) -> None:
+    """
+    Validate the DataFrame to ensure it has the correct columns and email format.
+
+    This function checks if the input DataFrame contains the required columns ('NAME' and 'EMAIL') and verifies that all
+    entries in the 'EMAIL' column appear to be valid email addresses.
+
+    Parameters:
+    df (pd.DataFrame): The DataFrame to be validated.
+
+    Returns: None
+
+    Raises:
+    RuntimeError: If the DataFrame is missing required columns or contains invalid email addresses.
+    """
 
     has_right_columns = set(["NAME", "EMAIL"]).issubset(df.columns)
 
@@ -18,8 +33,34 @@ def validate_df(df):
 
 
 def parse_csv_and_send(
-    sender_name, sender_email, pwd, csv_file, subject, body_template, imgpath=None
-):
+    sender_name: str,
+    sender_email: str,
+    pwd: str,
+    csv_file: Path,
+    subject: str,
+    body_template: str,
+    imgpath: Path = None,
+) -> None:
+    """
+    Parse a CSV file and send emails to the listed recipients.
+
+    This function reads a CSV file containing recipient information, validates the data, splits the full name into first
+    and last names, and sends formatted emails to each recipient. If image paths are provided, the emails will include
+    embedded images.
+
+    Parameters:
+    sender_name (str): Name of the email sender.
+    sender_email (str): Email address of the sender.
+    pwd (str): Password or application-specific password for the sender's email account.
+    csv_file (str): Path to the CSV file containing recipient information.
+    subject (str): Subject of the email.
+    body_template (str): HTML body content template of the email.
+    imgpath (list[Path], optional): List of paths to the image files to be embedded in the email.
+    Defaults to None.
+
+    Returns:
+    None
+    """
 
     df = pd.read_csv(csv_file)
 
@@ -72,7 +113,9 @@ if __name__ == "__main__":
         help="Email body text. Instances of \{FIRST\} and \{LAST\} will be replaced with first and last names, respectively. \{NAME\} will be replaced with full name.",
     )
     parser.add_argument("-s", "--subject", help="Email subject line (optional).")
-    parser.add_argument("-i", "--images", help="Path to image to send with the summary.", nargs="*")
+    parser.add_argument(
+        "-i", "--images", help="Path to image to send with the summary.", nargs="*"
+    )
 
     args = parser.parse_args()
 
