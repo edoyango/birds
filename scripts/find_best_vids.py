@@ -2,6 +2,7 @@
 import pandas as pd
 import numpy as np
 import argparse
+from pathlib import Path
 
 WEIGHTS = {
     "Blackbird": 4, 
@@ -27,9 +28,8 @@ def calculate_simpsons_diversity(species_counts):
     proportions = [count / total_count for count in species_counts]
     return 1 - sum(p ** 2 for p in proportions)
 
-def main(args):
+def main(duration, num_videos, csv_path):
     # Load CSV file
-    csv_path = args.csv
     data = pd.read_csv(csv_path, header=0)  # No header assumed; adjust if needed
 
     # Extract relevant columns
@@ -39,7 +39,7 @@ def main(args):
     metric_column = 'simpsons_diversity'
 
     # Filter rows by minimum duration
-    min_frames = args.duration*10 # assume 10 fps
+    min_frames = duration*10 # assume 10 fps
     filtered_data = data[data[frames_column] >= min_frames].copy()
 
     # apply weights to species columns
@@ -57,10 +57,11 @@ def main(args):
     sorted_data = filtered_data.sort_values(by='simpsons_diversity', ascending=False)
 
     # Select top n videos
-    top_videos = sorted_data[video_column].head(args.num_videos)
+    top_videos = [Path(v) for v in sorted_data[video_column].head(num_videos)]
 
     # Print the video names space-delimited
-    print(" ".join(top_videos.astype(str)))
+    return top_videos
+    
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Select videos based on diversity and duration.")
@@ -68,5 +69,8 @@ if __name__ == "__main__":
     parser.add_argument("--num-videos", type=int, required=True, help="Number of videos to select.", default=4)
     parser.add_argument("--csv", type=str, default="meta.csv", help="Path to the input CSV file.")
     args = parser.parse_args()
-    main(args)
+
+    top_videos = main(args.duration, args.num_videos, args.csv)
+
+    print(" ".join(top_videos.astype(str)))
 

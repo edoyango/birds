@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-from PIL import Image, ImageSequence
+from PIL import Image
+from pathlib import Path
 
-def stack_gifs(gif_paths, output_path):
+def stack_gifs(gif_paths: list[Path], output_path: Path):
     gifs = [Image.open(gif) for gif in gif_paths]
 
     # Ensure all GIFs have the same number of frames
@@ -33,8 +34,8 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("output_gif")
-    parser.add_argument("input_gifs", nargs="+")
+    parser.add_argument("output_gif", type=Path)
+    parser.add_argument("input_gifs", nargs="+", type=Path)
     args = parser.parse_args()
 
     stack_gifs(args.input_gifs, args.output_gif)
