@@ -9,6 +9,7 @@ docker run \
     --net birds_bird_net \
     -v /bird-detections:/output \
     -v ./email-lists.csv:/app/email-lists.csv:ro \
-    --entrypoint python \
+    -e GMAIL_APP_PWD=bpcshpyjugjpmbvy \
+    --entrypoint post-process \
     ghcr.io/edoyango/birds \
-        /app/post-process.py $output_dir $output_dir/meta.csv /app/email-lists.csv
+        $output_dir $output_dir/meta.csv /app/email-lists.csv

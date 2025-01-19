@@ -34,7 +34,7 @@ Issues = "https://github.com/edoyango/birds/issues"
 
 [project.scripts]
 extract-birbs = "birdector.extract_birbs:main"
-rknpu-exporter = "birdector.rknpu_exporter:main"
+rknpu-exporter = "birdector.utils.rknpu_exporter:main"
 post-process = "birdector.post_process:main"
 
 

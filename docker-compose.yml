@@ -21,7 +21,7 @@ services:
     working_dir: /app
     volumes:
       - /sys/kernel/debug/rknpu/load:/rknpu-load.txt:ro
-    entrypoint: /app/rknpu-exporter.py
+    entrypoint: rknpu-exporter
     restart: unless-stopped
     cpuset: 0-1
     networks:
