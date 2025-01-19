@@ -31,5 +31,9 @@ def metrics():
         metrics.append(f"rknpu_core_load_percentage{{core=\"{core}\"}} {load}")
     return Response("\n".join(metrics), mimetype='text/plain')
 
-if __name__ == '__main__':
+def main():
     app.run(host='0.0.0.0', port=9092)
+
+
+if __name__ == '__main__':
+    main()

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-from send_email import send_email_with_embedded_image, send_email
+from birdector.send_email import send_email_with_embedded_image, send_email
 import pandas as pd
 from pathlib import Path
 

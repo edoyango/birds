@@ -5,7 +5,7 @@ max_frames=${2:-6000}
 prefix="${3:-}"
 prom_port="${4:-9093}"
 
-python /app/extract-birbs.py \
+extract-birbs \
     --model_path /app/models/yolov5-birbs.rknn \
     --video "$video" \
     --anchors /app/models/anchors.txt \

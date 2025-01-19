@@ -12,7 +12,7 @@ import numpy as np
 import multiprocessing as mp
 from queue import Empty
 
-from rknn_yolov5 import RKNN_model
+from birdector.rknn_yolov5 import RKNN_model
 
 from flask import Flask, Response
 from prometheus_client import Gauge, generate_latest, CollectorRegistry, CONTENT_TYPE_LATEST
@@ -438,7 +438,7 @@ def start_flask_app(shared_dict, video, port):
             bird_gauge.labels(species=species, video=video).set(shared_dict[species])
     app.run(host="0.0.0.0", port=port)
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description="Detect birds from a video feed.")
     # basic params
     parser.add_argument(
@@ -624,3 +624,6 @@ Beginning processing...
         # close video if its opened
         if output_video and output_video.isOpened():
             output_video.release()
+
+if __name__ == "__main__":
+    main()

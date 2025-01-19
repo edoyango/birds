@@ -39,8 +39,10 @@ RUN cd /ffmpeg-dev && \
     ./configure --prefix=/usr --enable-gpl --enable-version3 --enable-libdrm --enable-rkmpp --enable-rkrga && \
     make && make install
 
+COPY . /app/
+
 RUN pip install --no-cache-dir 'torch<1.14' 'torchvision<0.15' --index-url https://download.pytorch.org/whl/cpu 'numpy<2' && \
-    pip install --no-cache-dir rknn-toolkit2 pandas flask prometheus_client && \
+    pip install --no-cache-dir /app && \
     pip uninstall -y opencv-python && \
     pip install --no-cache-dir opencv-python-headless
 
@@ -50,8 +52,6 @@ FROM python:3.10-slim AS runtime
 RUN apt-get update && apt-get install libdrm2 libgcc-s1 libstdc++6 gifsicle curl -y && apt-get clean -y && rm -rf /var/lib/apt/lists/*
 
 # Copy over runtime files from builder image
-## /usr/local will contain all pip-installed packages
-COPY --from=builder /usr/local /usr/local
 ## rga dynamic lib needed for ffmpeg
 COPY --from=builder /lib/librga.so.2 /lib/librga.so.2
 COPY --from=builder /lib/librga.so.2.1.0 /lib/librga.so.2.1.0
@@ -63,9 +63,10 @@ COPY --from=builder /usr/bin/ffmpeg /usr/bin/ffmpeg
 ## get rknn runtime for NPU
 COPY --from=builder /usr/lib/librknnrt.so /usr/lib/librknnrt.so
 COPY --from=builder /usr/lib64/librknnrt.so /usr/lib64/librknnrt.so
+## /usr/local will contain all pip-installed packages
+COPY --from=builder /usr/local /usr/local
 
 # copy files needed for inference
-COPY ./scripts /app
 COPY ./utils/docker-entrypoint.sh /app/entrypoint.sh
 WORKDIR /app
 

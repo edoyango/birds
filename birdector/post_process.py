@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 
 from datetime import datetime
-import find_best_vids
+from birdector import find_best_vids
 from pathlib import Path
 import cv2
 import os
 import tempfile
-from stack_gifs import stack_gifs
-from parse_instances import parse_instances
-from send_birb_summary import parse_csv_and_send
+from birdector.stack_gifs import stack_gifs
+from birdector.parse_instances import parse_instances
+from birdector.send_birb_summary import parse_csv_and_send
 
 
 def vids2gif(best_vids: list[Path], vid_duration: float = 15) -> list[Path]:
@@ -52,7 +52,7 @@ def vids2gif(best_vids: list[Path], vid_duration: float = 15) -> list[Path]:
     return gifs2stack
 
 
-def main(
+def post_process(
     date: str,
     output_dir: Path,
     vid_duration: float,
@@ -133,8 +133,7 @@ def main(
         [output_panel, output_gif],
     )
 
-
-if __name__ == "__main__":
+def main():
 
     import argparse
 
@@ -151,7 +150,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    main(
+    post_process(
         args.date,
         args.output_dir,
         args.video_duration,
@@ -159,3 +158,6 @@ if __name__ == "__main__":
         args.input_csv,
         args.mailing_list_csv,
     )
+
+if __name__ == "__main__":
+    main()
