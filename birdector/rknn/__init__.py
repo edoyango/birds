@@ -108,7 +108,7 @@ class inference_result:
         return img_copy
 
 
-class RKNN_model:
+class yolov5:
     """
     RKNN_model class for handling RKNN model loading, inference, and post-processing.
     Methods:

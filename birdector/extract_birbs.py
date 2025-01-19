@@ -12,7 +12,7 @@ import numpy as np
 import multiprocessing as mp
 from queue import Empty
 
-from birdector.rknn_yolov5 import RKNN_model
+from .rknn import yolov5
 
 from flask import Flask, Response
 from prometheus_client import Gauge, generate_latest, CollectorRegistry, CONTENT_TYPE_LATEST
@@ -506,7 +506,7 @@ def main():
     print("use anchors from '{}', which is {}".format(args.anchors, anchors))
 
     # init model
-    model = RKNN_model(args.model_path, args.target, args.device_id)
+    model = yolov5(args.model_path, args.target, args.device_id)
 
     # start worker to broadcast data for prometheus
     manager = mp.Manager()

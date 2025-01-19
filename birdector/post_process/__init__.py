@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 
 from datetime import datetime
-from birdector import find_best_vids
+from . import find_best_vids
 from pathlib import Path
 import cv2
 import os
 import tempfile
-from birdector.stack_gifs import stack_gifs
-from birdector.parse_instances import parse_instances
-from birdector.send_birb_summary import parse_csv_and_send
+from .stack_gifs import stack_gifs
+from .parse_instances import parse_instances
+from .send_birb_summary import parse_csv_and_send
 
 
 def vids2gif(best_vids: list[Path], vid_duration: float = 15) -> list[Path]:
