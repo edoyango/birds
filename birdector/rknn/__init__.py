@@ -174,14 +174,10 @@ class yolov5:
             print("ERROR: rknn has been released")
             return []
 
-        if isinstance(inputs, list) or isinstance(inputs, tuple):
-            pass
-        else:
+        if not (isinstance(inputs, list) or isinstance(inputs, tuple)):
             inputs = [inputs]
 
-        result = self.rknn.inference(inputs=inputs)
-
-        return result
+        return self.rknn.inference(inputs=inputs, data_format='nhwc')
 
     @staticmethod
     def post_process(
