@@ -18,24 +18,6 @@ typedef struct {
 } letterbox_t;
 
 /**
- * @brief Read image file (support png/jpeg/bmp)
- * 
- * @param path [in] Image path
- * @param image [out] Read image
- * @return int 0: success; -1: error
- */
-int read_image(const char* path, image_buffer_t* image);
-
-/**
- * @brief Write image file (support jpg/png)
- * 
- * @param path [in] Image path
- * @param image [in] Image for write (only support IMAGE_FORMAT_RGB888)
- * @return int 0: success; -1: error
- */
-int write_image(const char* path, const image_buffer_t* image);
-
-/**
  * @brief Convert image for resize and pixel format change
  * 
  * @param src_image [in] Source Image

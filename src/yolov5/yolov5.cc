@@ -99,15 +99,9 @@ extern "C" int init_yolov5_model(const char *model_path, rknn_app_context_t *app
     // Set to context
     app_ctx->rknn_ctx = ctx;
 
-    // TODO
-    if (output_attrs[0].qnt_type == RKNN_TENSOR_QNT_AFFINE_ASYMMETRIC && output_attrs[0].type != RKNN_TENSOR_FLOAT16)
-    {
-        app_ctx->is_quant = true;
-    }
-    else
-    {
-        app_ctx->is_quant = false;
-    }
+    app_ctx->is_quant = 
+        output_attrs[0].qnt_type == RKNN_TENSOR_QNT_AFFINE_ASYMMETRIC && 
+        output_attrs[0].type != RKNN_TENSOR_FLOAT16;
 
     app_ctx->io_num = io_num;
     app_ctx->input_attrs = (rknn_tensor_attr *)malloc(io_num.n_input * sizeof(rknn_tensor_attr));

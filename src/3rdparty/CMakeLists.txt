@@ -5,10 +5,6 @@ project(rknn_model_zoo_3rdparty_libs)
 # stb image
 set(STB_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/include/stb_image PARENT_SCOPE)
 
-# jpeg turbo
-set(LIBJPEG ${CMAKE_CURRENT_SOURCE_DIR}/lib/jpeg_turbo/libturbojpeg.a PARENT_SCOPE)
-set(LIBJPEG_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/include/jpeg_turbo PARENT_SCOPE)
-
 # rknn runtime (rknpu2)
 set(LIBRKNNRT_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/include/rknpu2 PARENT_SCOPE)
 

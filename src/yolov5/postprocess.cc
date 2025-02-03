@@ -23,82 +23,8 @@
 
 #include <set>
 #include <vector>
-#define LABEL_NALE_TXT_PATH "./model/coco_80_labels_list.txt"
-
-static char *labels[OBJ_CLASS_NUM];
-
-// const int anchor[3][6] = {{29, 27, 38, 42, 57, 30},
-//                           {46, 69, 67, 50, 108, 53},
-//                           {76, 79, 86, 137, 137, 93}};
 
 inline static int clamp(float val, int min, int max) { return val > min ? (val < max ? val : max) : min; }
-
-static char *readLine(FILE *fp, char *buffer, int *len)
-{
-    int ch;
-    int i = 0;
-    size_t buff_len = 0;
-
-    buffer = (char *)malloc(buff_len + 1);
-    if (!buffer)
-        return NULL; // Out of memory
-
-    while ((ch = fgetc(fp)) != '\n' && ch != EOF)
-    {
-        buff_len++;
-        void *tmp = realloc(buffer, buff_len + 1);
-        if (tmp == NULL)
-        {
-            free(buffer);
-            return NULL; // Out of memory
-        }
-        buffer = (char *)tmp;
-
-        buffer[i] = (char)ch;
-        i++;
-    }
-    buffer[i] = '\0';
-
-    *len = buff_len;
-
-    // Detect end
-    if (ch == EOF && (i == 0 || ferror(fp)))
-    {
-        free(buffer);
-        return NULL;
-    }
-    return buffer;
-}
-
-static int readLines(const char *fileName, char *lines[], int max_line)
-{
-    FILE *file = fopen(fileName, "r");
-    char *s;
-    int i = 0;
-    int n = 0;
-
-    if (file == NULL)
-    {
-        printf("Open %s fail!\n", fileName);
-        return -1;
-    }
-
-    while ((s = readLine(file, s, &n)) != NULL)
-    {
-        lines[i++] = s;
-        if (i >= max_line)
-            break;
-    }
-    fclose(file);
-    return i;
-}
-
-static int loadLabelName(const char *locationFilename, char *label[])
-{
-    printf("load lable %s\n", locationFilename);
-    readLines(locationFilename, label, OBJ_CLASS_NUM);
-    return 0;
-}
 
 static float CalculateOverlap(float xmin0, float ymin0, float xmax0, float ymax0, float xmin1, float ymin1, float xmax1,
                               float ymax1)
@@ -322,71 +248,6 @@ static int process_i8(int8_t *input, int *anchor, int grid_h, int grid_w, int he
     return validCount;
 }
 
-static int process_i8_rv1106(int8_t *input, int *anchor, int grid_h, int grid_w, int height, int width, int stride,
-                      std::vector<float> &boxes, std::vector<float> &boxScores, std::vector<int> &classId, float threshold,
-                      int32_t zp, float scale) {
-    int validCount = 0;
-    int8_t thres_i8 = qnt_f32_to_affine(threshold, zp, scale);
-
-    int anchor_per_branch = 3;
-    int align_c = PROP_BOX_SIZE * anchor_per_branch;
-
-    for (int h = 0; h < grid_h; h++) {
-        for (int w = 0; w < grid_w; w++) {
-            for (int a = 0; a < anchor_per_branch; a++) {
-                int hw_offset = h * grid_w * align_c + w * align_c + a * PROP_BOX_SIZE;
-                int8_t *hw_ptr = input + hw_offset;
-                int8_t box_confidence = hw_ptr[4];
-
-                if (box_confidence >= thres_i8) {
-                    int8_t maxClassProbs = hw_ptr[5];
-                    int maxClassId = 0;
-                    for (int k = 1; k < OBJ_CLASS_NUM; ++k) {
-                        int8_t prob = hw_ptr[5 + k];
-                        if (prob > maxClassProbs) {
-                            maxClassId = k;
-                            maxClassProbs = prob;
-                        }
-                    }
-
-                    float box_conf_f32 = deqnt_affine_to_f32(box_confidence, zp, scale);
-                    float class_prob_f32 = deqnt_affine_to_f32(maxClassProbs, zp, scale);
-                    float limit_score = box_conf_f32 * class_prob_f32;
-
-                    if (limit_score > threshold) {
-                        float box_x, box_y, box_w, box_h;
-
-                        box_x = deqnt_affine_to_f32(hw_ptr[0], zp, scale) * 2.0 - 0.5;
-                        box_y = deqnt_affine_to_f32(hw_ptr[1], zp, scale) * 2.0 - 0.5;
-                        box_w = deqnt_affine_to_f32(hw_ptr[2], zp, scale) * 2.0;
-                        box_h = deqnt_affine_to_f32(hw_ptr[3], zp, scale) * 2.0;
-                        box_w = box_w * box_w;
-                        box_h = box_h * box_h;
-
-
-                        box_x = (box_x + w) * (float)stride;
-                        box_y = (box_y + h) * (float)stride;
-                        box_w *= (float)anchor[a * 2];
-                        box_h *= (float)anchor[a * 2 + 1];
-
-                        box_x -= (box_w / 2.0);
-                        box_y -= (box_h / 2.0);
-
-                        boxes.push_back(box_x);
-                        boxes.push_back(box_y);
-                        boxes.push_back(box_w);
-                        boxes.push_back(box_h);
-                        boxScores.push_back(limit_score);
-                        classId.push_back(maxClassId);
-                        validCount++;
-                    }
-                }
-            }
-        }
-    }
-    return validCount;
-}
-
 static int process_fp32(float *input, int *anchor, int grid_h, int grid_w, int height, int width, int stride,
                         std::vector<float> &boxes, std::vector<float> &objProbs, std::vector<int> &classId, float threshold)
 {
@@ -445,11 +306,7 @@ static int process_fp32(float *input, int *anchor, int grid_h, int grid_w, int h
 
 int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter_box, float conf_threshold, float nms_threshold, object_detect_result_list *od_results, const int anchor[3][6])
 {
-#if defined(RV1106_1103) 
-    rknn_tensor_mem **_outputs = (rknn_tensor_mem **)outputs;
-#else
     rknn_output *_outputs = (rknn_output *)outputs;
-#endif
     std::vector<float> filterBoxes;
     std::vector<float> objProbs;
     std::vector<int> classId;
@@ -464,32 +321,6 @@ int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter
 
     for (int i = 0; i < 3; i++)
     {
-
-#if defined(RV1106_1103) 
-        grid_h = app_ctx->output_attrs[i].dims[1];
-        grid_w = app_ctx->output_attrs[i].dims[2];
-        stride = model_in_h / grid_h;
-        //RV1106 only support i8
-        if (app_ctx->is_quant) {
-            validCount += process_i8_rv1106((int8_t *)(_outputs[i]->virt_addr), (int *)anchor[i], grid_h, grid_w, model_in_h, model_in_w, stride, filterBoxes, objProbs,
-                                     classId, conf_threshold, app_ctx->output_attrs[i].zp, app_ctx->output_attrs[i].scale);
-        }
-#elif defined(RKNPU1)
-        // NCHW reversed: WHCN
-        grid_h = app_ctx->output_attrs[i].dims[1];
-        grid_w = app_ctx->output_attrs[i].dims[0];
-        stride = model_in_h / grid_h;
-        if (app_ctx->is_quant)
-        {
-            validCount += process_u8((uint8_t *)_outputs[i].buf, (int *)anchor[i], grid_h, grid_w, model_in_h, model_in_w, stride, filterBoxes, objProbs,
-                                     classId, conf_threshold, app_ctx->output_attrs[i].zp, app_ctx->output_attrs[i].scale);
-        }
-        else
-        {
-            validCount += process_fp32((float *)_outputs[i].buf, (int *)anchor[i], grid_h, grid_w, model_in_h, model_in_w, stride, filterBoxes, objProbs,
-                                       classId, conf_threshold);
-        }
-#else
         grid_h = app_ctx->output_attrs[i].dims[2];
         grid_w = app_ctx->output_attrs[i].dims[3];
         stride = model_in_h / grid_h;
@@ -504,27 +335,19 @@ int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter
             validCount += process_fp32((float *)_outputs[i].buf, (int *)anchor[i], grid_h, grid_w, model_in_h, model_in_w, stride, filterBoxes, objProbs,
                                        classId, conf_threshold);
         }
-#endif
     }
 
     // no object detect
-    if (validCount <= 0)
-    {
-        return 0;
-    }
+    if (validCount <= 0) return 0;
     std::vector<int> indexArray;
     for (int i = 0; i < validCount; ++i)
-    {
         indexArray.push_back(i);
-    }
     quick_sort_indice_inverse(objProbs, 0, validCount - 1, indexArray);
 
     std::set<int> class_set(std::begin(classId), std::end(classId));
 
     for (auto c : class_set)
-    {
         nms(validCount, filterBoxes, classId, indexArray, c, nms_threshold);
-    }
 
     int last_count = 0;
     od_results->count = 0;
@@ -532,10 +355,7 @@ int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter
     /* box valid detect target */
     for (int i = 0; i < validCount; ++i)
     {
-        if (indexArray[i] == -1 || last_count >= OBJ_NUMB_MAX_SIZE)
-        {
-            continue;
-        }
+        if (indexArray[i] == -1 || last_count >= OBJ_NUMB_MAX_SIZE) continue;
         int n = indexArray[i];
 
         float x1 = filterBoxes[n * 4 + 0] - letter_box->x_pad;
@@ -555,44 +375,4 @@ int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter
     }
     od_results->count = last_count;
     return 0;
-}
-
-int init_post_process()
-{
-    int ret = 0;
-    ret = loadLabelName(LABEL_NALE_TXT_PATH, labels);
-    if (ret < 0)
-    {
-        printf("Load %s failed!\n", LABEL_NALE_TXT_PATH);
-        return -1;
-    }
-    return 0;
-}
-
-char *coco_cls_to_name(int cls_id)
-{
-
-    if (cls_id >= OBJ_CLASS_NUM)
-    {
-        return "null";
-    }
-
-    if (labels[cls_id])
-    {
-        return labels[cls_id];
-    }
-
-    return "null";
-}
-
-void deinit_post_process()
-{
-    for (int i = 0; i < OBJ_CLASS_NUM; i++)
-    {
-        if (labels[i] != nullptr)
-        {
-            free(labels[i]);
-            labels[i] = nullptr;
-        }
-    }
 }
