@@ -9,6 +9,10 @@ target_include_directories(fileutils PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+if (DISABLE_RGA)
+    add_definitions(-DDISABLE_RGA)
+endif()
+
 # only RGA on rv1106 and rk3588 support handle
 if (TARGET_SOC STREQUAL "rv1106" OR TARGET_SOC STREQUAL "rk3588")
     add_definitions(-DLIBRGA_IM2D_HANDLE)

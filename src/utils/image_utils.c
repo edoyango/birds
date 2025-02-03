@@ -381,7 +381,7 @@ int convert_image(image_buffer_t* src_img, image_buffer_t* dst_img, image_rect_t
     int ret;
 #if defined(DISABLE_RGA) 
     if (verbose) printf("convert image use cpu\n");
-    ret = convert_image_cpu(src_img, dst_img, src_box, dst_box, color);
+    ret = convert_image_cpu(src_img, dst_img, src_box, dst_box, color, verbose);
 #else
 
     if(src_img->width % 16 == 0 && dst_img->width % 16 == 0) {
