@@ -55,6 +55,7 @@ def open_video(vname: Path) -> cv2.VideoCapture:
 
     cap = cv2.VideoCapture(vname)
 
+    # should make these params configurable
     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"YUYV"))
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
@@ -503,7 +504,7 @@ def main():
     with open(args.anchors, "r") as f:
         values = [float(_v) for _v in f.readlines()]
         anchors = np.array(values).reshape(3, -1, 2).tolist()
-    print("use anchors from '{}', which is {}".format(args.anchors, anchors))
+    print("use anchors from '{}', which is {}".format(args.anchors, anchors), file=sys.stderr)
 
     # init model
     model = yolov5(args.model_path, args.target, args.device_id)
@@ -545,8 +546,8 @@ MAX FRAMES: {args.max_frames} frames
 Saving detections to MySQL database: http://localhost:3306, grafana_data.metrics ...
 
 Beginning processing...
-"""
-    )
+""",
+    file=sys.stderr)
 
     videos_to_wait = []
 
@@ -579,6 +580,7 @@ Beginning processing...
             print(
                 f"frame {iframe} {len(inf_res.classes) if bird_detected else 0} birds",
                 end="\r",
+                file=sys.stderr,
             )
 
             if wait_counter < wait_limit:
