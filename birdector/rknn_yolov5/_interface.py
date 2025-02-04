@@ -6,6 +6,7 @@ _RKNN_MAX_DIMS = 16      # src/3rdparty/include/rknpu2/rknn_api.h
 _RKNN_MAX_NAME_LEN = 256 # src/3rdparty/include/rknpu2/rknn_api.h
 _OBJ_NUMB_MAX_SIZE = 128 # src/yolov5/yolov5.h
 
+# move this to a user cfg file
 _CLASS_COLOURS = (
     (208, 224, 64), # Blackbird
     (255,   0, 255), # Butcherbird
@@ -18,7 +19,8 @@ _CLASS_COLOURS = (
     (  0,   0, 255), # Wattlebird
 )
 
-_CLASS_NAMES = (
+# move this to a user cfg file
+CLASS_NAMES = (
     "Blackbird",
     "Butcherbird",
     "Currawong",
@@ -190,16 +192,16 @@ class detection():
 
 class object_detect_result():
     def __init__(self, cresult: _object_detect_result_list, input_img: _np.ndarray):
-        self.detections = (detection(cresult.results[i]) for i in range(cresult.count))
+        self.detections = [detection(cresult.results[i]) for i in range(cresult.count)]
         self.src_img = input_img
-        self.class_names = _CLASS_NAMES
+        self.class_names = CLASS_NAMES
     def draw(self, conf: bool = True) -> _np.ndarray:
         img_copy = self.src_img.copy()
         for d in self.detections:
             _cv2.rectangle(
                 img_copy, (d.box.left, d.box.top), (d.box.right, d.box.bottom), _CLASS_COLOURS[d.class_id], 2
             )
-            label = "{0} {1:.2f}".format(_CLASS_NAMES[d.class_id], d.score) if conf else f"{_CLASS_NAMES[d.class_id]}"
+            label = "{0} {1:.2f}".format(CLASS_NAMES[d.class_id], d.score) if conf else f"{CLASS_NAMES[d.class_id]}"
             _cv2.putText(
                 img_copy,
                 label,

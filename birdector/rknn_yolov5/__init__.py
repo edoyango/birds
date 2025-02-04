@@ -1,6 +1,6 @@
 from pathlib import Path
 import ctypes
-from ._interface import _rknn_app_context_t, _object_detect_result_list, object_detect_result, numpy_to_image_buffer_t, _image_format_t
+from ._interface import _rknn_app_context_t, _object_detect_result_list, object_detect_result, numpy_to_image_buffer_t, _image_format_t, CLASS_NAMES
 import numpy as np
 
 # check that we're running on aarch64, Linux
@@ -20,7 +20,7 @@ class model():
         assert ret==0, f"Failed to initialize RKNN model at {model_path}"
         self.anchors = anchors
         assert isinstance(anchors, np.ndarray), "anchors must be a numpy array"
-        assert anchors.shape == (3, 6), "anchors must be a 3x6 numpy array"
+        assert anchors.shape == (3, 6), f"anchors must be a 3x6 numpy array, but were {anchors.shape}"
         self._anchors = np.ctypeslib.as_ctypes(anchors.astype(np.int32)) # should convert to a 3x6 raw int array
 
     def release(self):

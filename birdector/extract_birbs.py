@@ -10,9 +10,6 @@ from collections import Counter
 
 import numpy as np
 import multiprocessing as mp
-from queue import Empty
-
-from .rknn import yolov5
 
 from flask import Flask, Response
 from prometheus_client import Gauge, generate_latest, CollectorRegistry, CONTENT_TYPE_LATEST
@@ -26,17 +23,8 @@ NMS_THRESH = 0.5
 
 IMG_SIZE = (704, 704)  # (width, height), such as (1280, 736)
 
-CLASSES = (
-    "Blackbird",
-    "Butcherbird",
-    "Currawong",
-    "Dove",
-    "Lorikeet",
-    "Myna",
-    "Sparrow",
-    "Starling",
-    "Wattlebird",
-)
+from .rknn_yolov5 import CLASS_NAMES, object_detect_result
+from . import rknn_yolov5
 
 # add 1 to nice value so ffmpeg doesn't get in the way of the main processes
 FFMPEG_CMD = "nice -n 1 ffmpeg -y -hide_banner -loglevel error -i {input_video} -init_hw_device rkmpp=hw -filter_hw_device hw -vf hwupload,scale_rkrga=w=864:h=486 -c:v hevc_rkmpp -qp_init 20 {output_video}"
@@ -65,36 +53,20 @@ def open_video(vname: Path) -> cv2.VideoCapture:
 
     return cap
 
-
-def img_check(path: Path) -> bool:
-    """
-    Checks if the given file path has an image extension.
-    Args:
-        path (str): The file path to check.
-    Returns:
-        bool: True if the file has an image extension (.jpg, .jpeg, .png, .bmp),
-              False otherwise.
-    """
-    img_type = [".jpg", ".jpeg", ".png", ".bmp"]
-    for _type in img_type:
-        if path.endswith(_type) or path.endswith(_type.upper()):
-            return True
-    return False
-
-
-def count_detections(classes: np.ndarray) -> dict:
+#need to change this
+def count_detections(inference_results: object_detect_result) -> dict:
     """
     Count the occurrences of each class in the given list of classes.
     Args:
         classes (list): A list of class identifiers (as integers or strings that can be converted to integers).
     Returns:
-        dict: A dictionary where the keys are class names (from the global CLASSES dictionary) and the values are the counts of each class in the input list.
+        dict: A dictionary where the keys are class names (from the global CLASS_NAMES dictionary) and the values are the counts of each class in the input list.
     """
 
-    counts = Counter({i: 0 for i in range(len(CLASSES))})
-    counts.update(classes)
+    counts = Counter({i: 0 for i in range(len(inference_results.class_names))})
+    counts.update((d.class_id for d in inference_results.detections))
 
-    return {CLASSES[k]: v for k, v in counts.items()}
+    return {inference_results.class_names[k]: v for k, v in counts.items()}
 
 
 class detected_bird_video:
@@ -217,13 +189,13 @@ class detected_bird_video:
         # initialise output video metadata
         self.nframes = 0
         self.total_instances = 0
-        self.total_class_count = {c: 0 for c in CLASSES}
+        self.total_class_count = {c: 0 for c in CLASS_NAMES}
         self.opened = self.worker.is_alive()
         if not self.opened:
             raise RuntimeError("Problem opening trigger or original video")
 
     def write(
-        self, trigger_frame: np.ndarray, original_frame: np.ndarray, classes: np.ndarray
+        self, trigger_frame: np.ndarray, original_frame: np.ndarray, infres: object_detect_result
     ) -> None:
         """
         Write frames to the video and update instance statistics.
@@ -252,13 +224,12 @@ class detected_bird_video:
             {
                 "trigger_frame": trigger_frame,
                 "original_frame": original_frame,
-                "classes": classes,
             }
         )
 
         self.nframes += 1
 
-        classes_count = {} if classes is None else count_detections(classes)
+        classes_count = count_detections(infres)
         for k, v in classes_count.items():
             self.total_class_count[k] += v
             self.total_instances += v
@@ -435,7 +406,7 @@ def start_flask_app(shared_dict, video, port):
     @app.before_request
     def update_metrics():
         """Update bird species metrics before each request."""
-        for species in CLASSES:
+        for species in CLASS_NAMES:
             bird_gauge.labels(species=species, video=video).set(shared_dict[species])
     app.run(host="0.0.0.0", port=port)
 
@@ -448,10 +419,6 @@ def main():
         required=True,
         help="model path, could be .pt or .rknn file",
     )
-    parser.add_argument(
-        "--target", type=str, default="rk3588", help="target RKNPU platform"
-    )
-    parser.add_argument("--device_id", type=str, default=None, help="device id")
 
     # data params
     parser.add_argument(
@@ -503,11 +470,11 @@ def main():
     # load anchors
     with open(args.anchors, "r") as f:
         values = [float(_v) for _v in f.readlines()]
-        anchors = np.array(values).reshape(3, -1, 2).tolist()
+        anchors = np.array(values).reshape(-1, 6)
     print("use anchors from '{}', which is {}".format(args.anchors, anchors), file=sys.stderr)
 
     # init model
-    model = yolov5(args.model_path, args.target, args.device_id)
+    model = rknn_yolov5.model(args.model_path, anchors)
 
     # start worker to broadcast data for prometheus
     manager = mp.Manager()
@@ -567,18 +534,18 @@ Beginning processing...
                 raise ("Error reading frame from input feed.")
 
             # inference
-            inf_res = model.infer(frame, anchors, IMG_SIZE, NMS_THRESH)
+            inf_res = model.inference(frame)
 
-            # save to mysql queue once every second
+            # save to exporter every second
             if iframe % int(fps) == 0: 
-                shared_dict.update(count_detections(inf_res.classes))
+                shared_dict.update(count_detections(inf_res))
 
-            bird_detected = inf_res.classes is not None
+            bird_detected = bool(inf_res.detections) # detections is a list
             wait_counter = 0 if bird_detected else wait_counter + 1
 
             # print number of detections to terminal
             print(
-                f"frame {iframe} {len(inf_res.classes) if bird_detected else 0} birds",
+                f"frame {iframe} {len(inf_res.detections)} birds",
                 end="\r",
                 file=sys.stderr,
             )
@@ -589,11 +556,10 @@ Beginning processing...
                         args.output_dir, 10, w, h, 50, 0.9, args.video_name_prefix
                     )
                 output_video.write(
-                    trigger_frame=inf_res.draw(CLASSES, conf=False).copy(),
+                    # I think the draw api has changed
+                    trigger_frame=inf_res.draw(conf=False),
                     original_frame=frame.copy(),
-                    classes=(
-                        inf_res.classes.copy() if inf_res.classes is not None else None
-                    ),
+                    infres=inf_res,
                 )
             elif output_video and output_video.isOpened():
                 output_video.release()
