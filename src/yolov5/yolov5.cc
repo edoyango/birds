@@ -158,7 +158,7 @@ extern "C" int inference_yolov5_model(rknn_app_context_t *app_ctx, image_buffer_
     rknn_output outputs[app_ctx->io_num.n_output];
     const float nms_threshold = NMS_THRESH;      // Default NMS threshold
     const float box_conf_threshold = BOX_THRESH; // Default box threshold
-    int bg_color = 114;
+    int bg_color = 0;
 
     if ((!app_ctx) || !(img) || (!od_results))
     {
