@@ -476,18 +476,6 @@ def main():
     # init model
     model = rknn_yolov5.model(args.model_path, anchors)
 
-    # start worker to broadcast data for prometheus
-    manager = mp.Manager()
-    shared_dict = manager.dict()
-    prom_exporter_worker = mp.Process(
-        target=start_flask_app,
-        args=(
-            shared_dict,
-            args.video,
-            args.metrics_port
-        ),
-    )
-    prom_exporter_worker.start()
 
     # open video and define some metadata
     cap = open_video(args.video)
@@ -520,6 +508,20 @@ Beginning processing...
 
     # start try except finally clause for handling of multiprocessing
     try:
+
+        # start worker to broadcast data for prometheus
+        manager = mp.Manager()
+        shared_dict = manager.dict()
+        prom_exporter_worker = mp.Process(
+            target=start_flask_app,
+            args=(
+                shared_dict,
+                args.video,
+                args.metrics_port
+            ),
+        )
+        prom_exporter_worker.start()
+
         # begin reading
         suc = True
         iframe = 0
