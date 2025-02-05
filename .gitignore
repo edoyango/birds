@@ -8,3 +8,7 @@ runs
 **.cache
 **.onnx
 **.engine
+**.ipynb
+**.jpg
+**.jpeg
+**.png
