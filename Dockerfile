@@ -39,7 +39,10 @@ RUN cd /ffmpeg-dev && \
     ./configure --prefix=/usr --enable-gpl --enable-version3 --enable-libdrm --enable-rkmpp --enable-rkrga && \
     make && make install
 
-COPY . /app/
+COPY ./birdector /app/birdector
+COPY ./src /app/src
+COPY ./pyproject.toml /app/pyproject.toml
+COPY ./README.md /app/README.md
 
 RUN pip install --no-cache-dir 'torch<1.14' 'torchvision<0.15' --index-url https://download.pytorch.org/whl/cpu 'numpy<2' && \
     pip install --no-cache-dir /app && \
