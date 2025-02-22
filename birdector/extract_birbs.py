@@ -363,8 +363,8 @@ def video_writer_worker(
             cap_trigger.release()
             cap_original.release()
 
-            # compress output videos, removing if they don't meet the minframes threshold
-            if nframes < minframes:
+            # compress output videos, removing if they don't meet the minframes threshold + 1s worth of frames
+            if nframes < minframes + fps:
                 trigger_path.unlink(missing_ok=True)
                 original_path.unlink(missing_ok=True)
             else:
