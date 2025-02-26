@@ -21,7 +21,7 @@ NMS_THRESH = 0.5
 # OBJ_THRESH = 0.001
 # NMS_THRESH = 0.65
 
-IMG_SIZE = (704, 704)  # (width, height), such as (1280, 736)
+IMG_SIZE = (800, 800)  # (width, height), such as (1280, 736)
 
 from .rknn_yolov5 import CLASS_NAMES, object_detect_result
 from . import rknn_yolov5
@@ -363,8 +363,8 @@ def video_writer_worker(
             cap_trigger.release()
             cap_original.release()
 
-            # compress output videos, removing if they don't meet the minframes threshold
-            if nframes < minframes:
+            # compress output videos, removing if they don't meet the minframes threshold + 1s worth of frames
+            if nframes < minframes + fps:
                 trigger_path.unlink(missing_ok=True)
                 original_path.unlink(missing_ok=True)
             else:
