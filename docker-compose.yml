@@ -16,7 +16,7 @@ services:
       - bird_net
 
   rknpu_exporter:
-    image: ghcr.io/edoyango/birds
+    image: ${BIRDS_CONTAINER}
     container_name: rknpu_exporter
     working_dir: /app
     volumes:
@@ -78,7 +78,7 @@ services:
       - bird_net
 
   video0_extract:
-    image: ghcr.io/edoyango/birds
+    image: ${BIRDS_CONTAINER}
     container_name: video0-extract
     volumes:
       - /bird-detections:/output
@@ -101,7 +101,7 @@ services:
       - bird_net
   
   video2_extract:
-    image: ghcr.io/edoyango/birds
+    image: ${BIRDS_CONTAINER}
     container_name: video2-extract
     volumes:
       - /bird-detections:/output
