@@ -27,10 +27,10 @@ class model():
         # calculate NPU core mask
         assert all(type(n) == int for n in npu_cores), "Failed to init rknn model: all elements in npu_cores must be int"
         assert any(-1 <= n <= 2 for n in npu_cores), "Failed to init rknn model: npu_cores must contain elements between -1 and 2 (inclusive)"
-        core_maps = [_CORE_MASK_MAP[n] for n in npu_cores]
         if -1 in npu_cores:
             self._core_mask = _rknn_core_mask.RKNN_NPU_CORE_AUTO
         else:
+            core_maps = [_CORE_MASK_MAP[n] for n in npu_cores]
             self._core_mask = functools.reduce(operator.or_, core_maps)
         
         # call C lib to init rknn model
