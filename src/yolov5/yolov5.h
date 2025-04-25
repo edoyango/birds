@@ -33,7 +33,7 @@ typedef struct {
 #include "postprocess.h"
 
 
-extern "C" int init_yolov5_model(const char* model_path, rknn_app_context_t* app_ctx);
+extern "C" int init_yolov5_model(const char* model_path, rknn_app_context_t* app_ctx, _rknn_core_mask core_mask = RKNN_NPU_CORE_AUTO);
 
 extern "C" int release_yolov5_model(rknn_app_context_t* app_ctx);
 

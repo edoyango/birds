@@ -31,7 +31,7 @@ static void dump_tensor_attr(rknn_tensor_attr *attr)
            get_qnt_type_string(attr->qnt_type), attr->zp, attr->scale);
 }
 
-extern "C" int init_yolov5_model(const char *model_path, rknn_app_context_t *app_ctx)
+extern "C" int init_yolov5_model(const char *model_path, rknn_app_context_t *app_ctx, _rknn_core_mask core_mask)
 {
     int ret;
     int model_len = 0;
@@ -95,6 +95,8 @@ extern "C" int init_yolov5_model(const char *model_path, rknn_app_context_t *app
         }
         dump_tensor_attr(&(output_attrs[i]));
     }
+
+    ret = rknn_set_core_mask(ctx, core_mask);
 
     // Set to context
     app_ctx->rknn_ctx = ctx;

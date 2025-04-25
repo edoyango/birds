@@ -84,6 +84,13 @@ class _rknn_tensor_qnt_type(_ctypes.c_int):
     RKNN_TENSOR_QNT_AFFINE_ASYMMETRIC=2 # asymmetric affine.
     RKNN_TENSOR_QNT_MAX=3
 
+class _rknn_core_mask(_ctypes.c_int):
+    RKNN_NPU_CORE_AUTO=0
+    RKNN_NPU_CORE_0=1
+    RKNN_NPU_CORE_1=2
+    RKNN_NPU_CORE_2=4
+    RKNN_NPU_CORE_ALL=0xfff
+
 class _rknn_tensor_attr(_ctypes.Structure):
     _fields_ = [
         ("index", _ctypes.c_uint32),

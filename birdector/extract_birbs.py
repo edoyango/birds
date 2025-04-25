@@ -464,6 +464,13 @@ def main():
         default=9093,
         help="Port for metrics exporter to listen on."
     )
+    parser.add_argument(
+        "--npu-cores",
+        "-c",
+        type=str,
+        default="-1",
+        help="RK3588 NPU cores to use e.g. 0,1 will use cores 0 and 1. Passing -1 will choose 1 random core.",
+    )
 
     args = parser.parse_args()
 
@@ -474,8 +481,11 @@ def main():
     print("use anchors from '{}', which is {}".format(args.anchors, anchors), file=sys.stderr)
 
     # init model
-    model = rknn_yolov5.model(args.model_path, anchors)
-
+    try:
+        npu_cores = [int(n) for n in args.npu_cores.split(",")]
+    except TypeError:
+        raise TypeError("Selected NPU cores must be integers.")
+    model = rknn_yolov5.model(args.model_path, anchors, npu_cores=npu_cores)
 
     # open video and define some metadata
     cap = open_video(args.video)
@@ -548,7 +558,6 @@ Beginning processing...
             # print number of detections to terminal
             print(
                 f"frame {iframe} {len(inf_res.detections)} birds",
-                end="\r",
                 file=sys.stderr,
             )
 
