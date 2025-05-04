@@ -3,19 +3,9 @@ import pandas as pd
 import numpy as np
 import argparse
 from pathlib import Path
+from ..config import load_config
 
-WEIGHTS = {
-    "Blackbird": 4,
-    "Butcherbird": 8,
-    "Currawong": 7,
-    "Dove": 1,
-    "Lorikeet": 9,
-    "Myna": 3,
-    "Sparrow": 2,
-    "Starling": 5,
-    "Wattlebird": 6,
-}
-
+WEIGHTS = {i[0]: i[1]["weight"] for i in load_config().items()}
 
 def calculate_simpsons_diversity(species_counts: list[int]) -> float:
     """
@@ -53,17 +43,7 @@ def main(duration: float, num_videos: int, csv_path: Path) -> list[Path]:
     # Extract relevant columns
     video_column = "trigger video path"  # 5th column (0-based index)
     frames_column = "nframes"  # 7th column (0-based index)
-    species_columns = [
-        "Blackbird",
-        "Butcherbird",
-        "Currawong",
-        "Dove",
-        "Lorikeet",
-        "Myna",
-        "Sparrow",
-        "Starling",
-        "Wattlebird",
-    ]  # 9th column onward (0-based index)
+    species_columns = list(WEIGHTS.keys())  # 9th column onward (0-based index)
     metric_column = "simpsons_diversity"
 
     # Filter rows by minimum duration

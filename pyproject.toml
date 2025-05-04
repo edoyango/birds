@@ -1,13 +1,14 @@
 [project]
 name = "birdector"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
     "torch",
     "torchvision",
     "rknn-toolkit2==2.3.0",
     "pandas",
     "flask",
-    "prometheus_client"
+    "prometheus_client",
+    "toml"
 ]
 requires-python = ">= 3.9"
 authors = [

@@ -1,36 +1,16 @@
 import ctypes as _ctypes
 import numpy as _np
 import cv2 as _cv2
+from ..config import load_config
 
 _RKNN_MAX_DIMS = 16      # src/3rdparty/include/rknpu2/rknn_api.h
 _RKNN_MAX_NAME_LEN = 256 # src/3rdparty/include/rknpu2/rknn_api.h
 _OBJ_NUMB_MAX_SIZE = 128 # src/yolov5/yolov5.h
 
-# move this to a user cfg file
-_CLASS_COLOURS = (
-    (208, 224, 64), # Blackbird
-    (255,   0, 255), # Butcherbird
-    (  0, 215, 255), # Currawong
-    (255,   0,   0), # Dove
-    (  0, 165, 255), # Lorikeet
-    (255, 255,   0), # Myna
-    (128,   0, 128), # Sparrow
-    (  0, 255, 255), # Starling
-    (  0,   0, 255), # Wattlebird
-)
+_classes_dict = load_config()
 
-# move this to a user cfg file
-CLASS_NAMES = (
-    "Blackbird",
-    "Butcherbird",
-    "Currawong",
-    "Dove",
-    "Lorikeet",
-    "Myna",
-    "Sparrow",
-    "Starling",
-    "Wattlebird",
-)
+_CLASS_COLOURS = tuple(i["colour"] for i in _classes_dict.values())
+CLASS_NAMES = tuple(_classes_dict.keys())
 
 class _image_format_t(_ctypes.c_int):
     IMAGE_FORMAT_GRAY8 = 0

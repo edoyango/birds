@@ -1,0 +1,27 @@
+[Blackbird]
+colour = [208, 224, 64]
+weight = 3.0
+
+[Currawong]
+colour = [0, 215, 255]
+weight = 6.0
+
+[Dove]
+colour = [255, 0, 0]
+weight = 1.0
+
+[Myna]
+colour = [255, 255, 0]
+weight = 2.0
+
+[Sparrow]
+colour = [128, 0, 128]
+weight = 0.5
+
+[Starling]
+colour = [0, 255, 255]
+weight = 4.0
+
+[Wattlebird]
+colour = [0, 0, 225]
+weight = 6.0
