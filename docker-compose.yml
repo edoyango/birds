@@ -83,8 +83,8 @@ services:
     volumes:
       - /bird-detections:/output
       - /etc/localtime:/etc/localtime:ro
-      - ./models/yolov5-birbs.rknn:/app/models/yolov5-birbs.rknn
-      - ./models/anchors.txt:/app/models/anchors.txt
+      - ./models/yolov7-birbs.rknn:/app/models/yolov5-birbs.rknn
+      - ./models/yolov7-anchors.txt:/app/models/anchors.txt
     restart: unless-stopped
     devices:
       - /dev/video0
@@ -96,6 +96,7 @@ services:
       - "0"
       - "video0-"
       - "9093"
+      - "0,1,2"
     cpuset: 2-7
     networks:
       - bird_net
