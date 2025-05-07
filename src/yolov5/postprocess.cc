@@ -36,23 +36,16 @@ static float CalculateOverlap(float xmin0, float ymin0, float xmax0, float ymax0
     return u <= 0.f ? 0.f : (i / u);
 }
 
-static int nms(int validCount, std::vector<float> &outputLocations, std::vector<int> classIds, std::vector<int> &order,
-               int filterId, float threshold)
+static int nms(int validCount, std::vector<float> &outputLocations, std::vector<int> &order, float threshold)
 {
     for (int i = 0; i < validCount; ++i)
     {
         int n = order[i];
-        if (n == -1 || classIds[n] != filterId)
-        {
-            continue;
-        }
+        if (n == -1) continue;
         for (int j = i + 1; j < validCount; ++j)
         {
             int m = order[j];
-            if (m == -1 || classIds[m] != filterId)
-            {
-                continue;
-            }
+            if (m == -1) continue;
             float xmin0 = outputLocations[n * 4 + 0];
             float ymin0 = outputLocations[n * 4 + 1];
             float xmax0 = outputLocations[n * 4 + 0] + outputLocations[n * 4 + 2];
@@ -65,10 +58,7 @@ static int nms(int validCount, std::vector<float> &outputLocations, std::vector<
 
             float iou = CalculateOverlap(xmin0, ymin0, xmax0, ymax0, xmin1, ymin1, xmax1, ymax1);
 
-            if (iou > threshold)
-            {
-                order[j] = -1;
-            }
+            if (iou > threshold) order[j] = -1;
         }
     }
     return 0;
@@ -307,9 +297,10 @@ static int process_fp32(float *input, int *anchor, int grid_h, int grid_w, int h
 int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter_box, float conf_threshold, float nms_threshold, object_detect_result_list *od_results, const int anchor[3][6])
 {
     rknn_output *_outputs = (rknn_output *)outputs;
-    std::vector<float> filterBoxes;
-    std::vector<float> objProbs;
-    std::vector<int> classId;
+    // could probably be made faster
+    std::vector<float> filterBoxes; filterBoxes.reserve(OBJ_NUMB_MAX_SIZE);
+    std::vector<float> objProbs; objProbs.reserve(OBJ_NUMB_MAX_SIZE);
+    std::vector<int> classId; objProbs.reserve(OBJ_NUMB_MAX_SIZE);
     int validCount = 0;
     int stride = 0;
     int grid_h = 0;
@@ -339,18 +330,14 @@ int post_process(rknn_app_context_t *app_ctx, void *outputs, letterbox_t *letter
 
     // no object detect
     if (validCount <= 0) return 0;
-    std::vector<int> indexArray;
-    for (int i = 0; i < validCount; ++i)
-        indexArray.push_back(i);
+    std::vector<int> indexArray(validCount);
+    for (int i = 0; i < validCount; ++i) indexArray[i] = i;
     quick_sort_indice_inverse(objProbs, 0, validCount - 1, indexArray);
 
-    std::set<int> class_set(std::begin(classId), std::end(classId));
-
-    for (auto c : class_set)
-        nms(validCount, filterBoxes, classId, indexArray, c, nms_threshold);
+    // remove similar boxes
+    nms(validCount, filterBoxes, indexArray, nms_threshold);
 
     int last_count = 0;
-    od_results->count = 0;
 
     /* box valid detect target */
     for (int i = 0; i < validCount; ++i)
