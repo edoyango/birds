@@ -59,6 +59,7 @@ def post_process(
     nvideos: int,
     input_csv: Path,
     mailing_list_csv: Path,
+    panel_id: int,
 ) -> None:
     """
     Main function to generate and send bird-watching updates.
@@ -101,10 +102,19 @@ def post_process(
     os.system(f"gifsicle -O3 --lossy=35 -i {stacked_gif} --colors 128 -o {output_gif}")
 
     # download grafana panel snapshot
-    output_panel = output_dir / "panel.png"
-    os.system(
-        f"curl -o {output_panel} 'admin:orangepi@grafana:3000/render/d-solo/de8twne7u2r5sc?orgId=1&from=now-12h&to=now&panelId=10&width=720&height=480&tz=Australia%2FSydney'"
-    )
+    if panel_id:
+        output_panel = output_dir / "panel.png"
+        os.system(
+            f"curl -o {output_panel} 'admin:orangepi@grafana:3000/render/d-solo/de8twne7u2r5sc?orgId=1&from=now-12h&to=now&panelId={panel_id}&width=720&height=480&tz=Australia%2FSydney'"
+        )
+        panel_html = """
+<p>Here's a heatmap of all the birds I saw throughout the day!</p>
+<img src=\"cid:{{image_cid0}}\">
+"""
+        graphics = [output_panel, output_gif]
+    else:
+        panel_html = ""
+        graphics = [output_gif]
 
     # count all the birds in the videos
     html_bird_list = parse_instances(input_csv)
@@ -122,8 +132,7 @@ def post_process(
 <ul>
 {html_bird_list}
 </ul>
-<p>Here's a heatmap of all the birds I saw throughout the day!</p>
-<img src=\"cid:{{image_cid0}}\">
+{panel_html}
 <p>And here's one of the videos with birds:</p>
 <img src=\"cid:{{image_cid1}}\">
 <p>Hope you have a great day!</p>
@@ -144,6 +153,7 @@ def main():
     )
     parser.add_argument("-t", "--video-duration", type=float, default=15)
     parser.add_argument("-n", "--nvideos", type=int, default=5)
+    parser.add_argument("-p", "--panel-id", type=int, default=None)
     parser.add_argument("output_dir", type=Path)
     parser.add_argument("input_csv", type=Path)
     parser.add_argument("mailing_list_csv", type=Path)
@@ -157,6 +167,7 @@ def main():
         args.nvideos,
         args.input_csv,
         args.mailing_list_csv,
+        args.panel_id,
     )
 
 if __name__ == "__main__":
