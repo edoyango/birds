@@ -109,9 +109,9 @@ def post_process(
         )
         panel_html = """
 <p>Here's a heatmap of all the birds I saw throughout the day!</p>
-<img src=\"cid:{{image_cid0}}\">
+<img src=\"cid:{image_cid1}\">
 """
-        graphics = [output_panel, output_gif]
+        graphics = [output_gif, output_panel]
     else:
         panel_html = ""
         graphics = [output_gif]
@@ -134,12 +134,12 @@ def post_process(
 </ul>
 {panel_html}
 <p>And here's one of the videos with birds:</p>
-<img src=\"cid:{{image_cid1}}\">
+<img src=\"cid:{{image_cid0}}\">
 <p>Hope you have a great day!</p>
 <p>Regards,<br>Ed's Birb Watcher</p>
 </body>
 </html>""",
-        [output_panel, output_gif],
+        graphics,
     )
 
 def main():
