@@ -140,7 +140,10 @@ def numpy_to_image_buffer_t(arr: _np.ndarray, format: _image_format_t, fd: int =
     if arr.dtype != _np.uint8:
         raise ValueError("The NumPy array must have dtype uint8.")
 
-    bs, height, width = arr.shape[:3]  # Assumes shape is (height, width, channels) for multi-channel images
+    if arr.ndim == 4:
+        bs, height, width = arr.shape[:3] # Assumes shape is (batch, height, width, channels) for multi-channel images
+    elif arr.ndim == 3:
+        height, width = arr.shape[:2] # (height, width, channels)
     # channels = 1 if arr.ndim == 2 else arr.shape[2]  # Handle grayscale (2D) and color (3D) images
 
     # Calculate strides (currently unused)
@@ -159,7 +162,7 @@ def numpy_to_image_buffer_t(arr: _np.ndarray, format: _image_format_t, fd: int =
     image_buffer.height_stride = height_stride
     image_buffer.format = format
     image_buffer.virt_addr = arr.ctypes.data_as(_ctypes.POINTER(_ctypes.c_ubyte))  # Pointer to the array data
-    image_buffer.size = width*height*3  # Total size in bytes
+    image_buffer.size = width*height*3  # Size of each image in bytes
     image_buffer.fd = fd  # File descriptor (if applicable)
 
     return image_buffer

@@ -47,13 +47,15 @@ class model():
 
     def inference(self, img: np.ndarray, verbose: bool = False) -> object_detect_result:
         img_buf = numpy_to_image_buffer_t(img, _image_format_t.IMAGE_FORMAT_RGB888)
-        res = (_object_detect_result_list*10)()
+        bs = 1 if img.ndim == 3 else img.shape[0]
+        res = (_object_detect_result_list*bs)()
         ret = _rknn_yolov5_lib.inference_yolov5_model(
             ctypes.byref(self._model_ctx), 
             ctypes.byref(img_buf), 
             res, 
             ctypes.byref(self._anchors), 
+            ctypes.c_int32(bs),
             ctypes.c_bool(verbose)
         )
         assert ret==0, f"Failed to perform inference on RKNN model at {self.model_path}"
-        return [object_detect_result(res[i], img[i]) for i in range(10)]
+        return [object_detect_result(res[i], img[i]) for i in range(bs)]

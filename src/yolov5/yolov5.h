@@ -37,6 +37,6 @@ extern "C" int init_yolov5_model(const char* model_path, rknn_app_context_t* app
 
 extern "C" int release_yolov5_model(rknn_app_context_t* app_ctx);
 
-extern "C" int inference_yolov5_model(rknn_app_context_t* app_ctx, image_buffer_t* img, object_detect_result_list* od_results, const int anchor[3][6], bool verbose);
+extern "C" int inference_yolov5_model(rknn_app_context_t* app_ctx, image_buffer_t* img, object_detect_result_list* od_results, const int anchor[3][6], const int batch_size, bool verbose);
 
 #endif //_RKNN_DEMO_YOLOV5_H_
