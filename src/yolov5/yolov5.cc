@@ -155,12 +155,13 @@ extern "C" int inference_yolov5_model(rknn_app_context_t *app_ctx, image_buffer_
 {
     int ret;
     image_buffer_t dst_img;
-    letterbox_t letter_box;
+    letterbox_t letter_box[10];
     rknn_input inputs[app_ctx->io_num.n_input];
     rknn_output outputs[app_ctx->io_num.n_output];
     const float nms_threshold = NMS_THRESH;      // Default NMS threshold
     const float box_conf_threshold = BOX_THRESH; // Default box threshold
     int bg_color = 0;
+    void* old_addr[app_ctx->io_num.n_output];
 
     if ((!app_ctx) || !(img) || (!od_results))
     {
@@ -178,7 +179,7 @@ extern "C" int inference_yolov5_model(rknn_app_context_t *app_ctx, image_buffer_
     dst_img.height = app_ctx->model_height;
     dst_img.format = IMAGE_FORMAT_RGB888;
     dst_img.size = get_image_size(&dst_img);
-    dst_img.virt_addr = (unsigned char *)malloc(dst_img.size);
+    dst_img.virt_addr = (unsigned char *)malloc(dst_img.size*10);
     if (dst_img.virt_addr == NULL)
     {
         printf("malloc buffer size:%d fail!\n", dst_img.size);
@@ -186,7 +187,12 @@ extern "C" int inference_yolov5_model(rknn_app_context_t *app_ctx, image_buffer_
     }
 
     // letterbox
-    ret = convert_image_with_letterbox(img, &dst_img, &letter_box, bg_color, (int)verbose);
+    image_buffer_t tmp_img = *img, tmp_dst_img = dst_img;
+    for (int i = 0; i < 10; ++i) {
+        ret = convert_image_with_letterbox(&tmp_img, &tmp_dst_img, &letter_box[i], bg_color, (int)verbose);
+        tmp_img.virt_addr += img->size;
+        tmp_dst_img.virt_addr += dst_img.size;
+    }
     if (ret < 0)
     {
         printf("convert_image_with_letterbox fail! ret=%d\n", ret);
@@ -197,7 +203,7 @@ extern "C" int inference_yolov5_model(rknn_app_context_t *app_ctx, image_buffer_
     inputs[0].index = 0;
     inputs[0].type = RKNN_TENSOR_UINT8;
     inputs[0].fmt = RKNN_TENSOR_NHWC;
-    inputs[0].size = app_ctx->model_width * app_ctx->model_height * app_ctx->model_channel;
+    inputs[0].size = app_ctx->model_width * app_ctx->model_height * app_ctx->model_channel * 10;
     inputs[0].buf = dst_img.virt_addr;
 
     ret = rknn_inputs_set(app_ctx->rknn_ctx, app_ctx->io_num.n_input, inputs);
@@ -217,7 +223,6 @@ extern "C" int inference_yolov5_model(rknn_app_context_t *app_ctx, image_buffer_
     }
 
     // Get Output
-    memset(outputs, 0, sizeof(outputs));
     for (int i = 0; i < app_ctx->io_num.n_output; i++)
     {
         outputs[i].index = i;
@@ -231,7 +236,18 @@ extern "C" int inference_yolov5_model(rknn_app_context_t *app_ctx, image_buffer_
     }
 
     // Post Process
-    post_process(app_ctx, outputs, &letter_box, box_conf_threshold, nms_threshold, od_results, anchor);
+    for (int d = 0; d < app_ctx->io_num.n_output; ++d) {
+        old_addr[d] = outputs[d].buf;
+        outputs[d].size /= 10;
+    }
+    for (int i = 0; i < 10; ++i) {
+        post_process(app_ctx, outputs, &letter_box[i], box_conf_threshold, nms_threshold, &od_results[i], anchor);
+        for (int d = 0; d < app_ctx->io_num.n_output; ++d) outputs[d].buf += outputs[d].size;
+    }
+    for (int d = 0; d < app_ctx->io_num.n_output; ++d) {
+        outputs[d].buf = old_addr[d];
+        outputs[d].size *= 10;
+    }
 
     // Remeber to release rknn output
     rknn_outputs_release(app_ctx->rknn_ctx, app_ctx->io_num.n_output, outputs);
