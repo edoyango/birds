@@ -12,7 +12,12 @@ import numpy as np
 import multiprocessing as mp
 
 from flask import Flask, Response
-from prometheus_client import Gauge, generate_latest, CollectorRegistry, CONTENT_TYPE_LATEST
+from prometheus_client import (
+    Gauge,
+    generate_latest,
+    CollectorRegistry,
+    CONTENT_TYPE_LATEST,
+)
 
 OBJ_THRESH = 0.5
 NMS_THRESH = 0.5
@@ -53,7 +58,8 @@ def open_video(vname: Path) -> cv2.VideoCapture:
 
     return cap
 
-#need to change this
+
+# need to change this
 def count_detections(inference_results: object_detect_result) -> dict:
     """
     Count the occurrences of each class in the given list of classes.
@@ -168,7 +174,9 @@ class detected_bird_video:
         self.meta_csv = Path(output_path) / "meta.csv"  # stores all video metadata
 
         # get video writer worker ready
-        self.frame_queue = mp.Queue(maxsize=100) # limit queue for when write becomes a problem
+        self.frame_queue = mp.Queue(
+            maxsize=100
+        )  # limit queue for when write becomes a problem
         self.worker = mp.Process(
             target=video_writer_worker,
             args=(
@@ -195,7 +203,10 @@ class detected_bird_video:
             raise RuntimeError("Problem opening trigger or original video")
 
     def write(
-        self, trigger_frame: np.ndarray, original_frame: np.ndarray, infres: object_detect_result
+        self,
+        trigger_frame: np.ndarray,
+        original_frame: np.ndarray,
+        infres: object_detect_result,
     ) -> None:
         """
         Write frames to the video and update instance statistics.
@@ -298,7 +309,21 @@ class detected_bird_video:
         return self.opened
 
 
-def inference_worker(model_path: Path, anchors_path: Path, batch_size: int, video: str, metrics_port: int, frame_queue: mp.Queue, fps: int, wait_limit: int, output_dir: Path, w: int, h: int, video_name_prefix: str):        
+def inference_worker(
+    model_path: Path,
+    anchors_path: Path,
+    batch_size: int,
+    video: str,
+    metrics_port: int,
+    frame_queue: mp.Queue,
+    fps: int,
+    wait_limit: int,
+    output_dir: Path,
+    w: int,
+    h: int,
+    video_name_prefix: str,
+    npu_cores: list,
+):
 
     videos_to_wait = []
 
@@ -307,11 +332,7 @@ def inference_worker(model_path: Path, anchors_path: Path, batch_size: int, vide
     shared_dict = manager.dict()
     prom_exporter_worker = mp.Process(
         target=start_flask_app,
-        args=(
-            shared_dict,
-            video,
-            metrics_port
-        ),
+        args=(shared_dict, video, metrics_port),
     )
     prom_exporter_worker.start()
 
@@ -319,10 +340,13 @@ def inference_worker(model_path: Path, anchors_path: Path, batch_size: int, vide
     with open(anchors_path, "r") as f:
         values = [float(_v) for _v in f.readlines()]
         anchors = np.array(values).reshape(-1, 6)
-    print("use anchors from '{}', which is {}".format(anchors_path, anchors), file=sys.stderr)
+    print(
+        "use anchors from '{}', which is {}".format(anchors_path, anchors),
+        file=sys.stderr,
+    )
 
-    model = rknn_yolov5.model(model_path, anchors, npu_cores=[0,1,2])
-    
+    model = rknn_yolov5.model(model_path, anchors, npu_cores=npu_cores)
+
     # begin reading
     iframe = 0
     wait_counter = sys.maxsize
@@ -336,11 +360,19 @@ def inference_worker(model_path: Path, anchors_path: Path, batch_size: int, vide
 
         if type(input_frame) != np.ndarray:
             # finish off batch
-            frames[frames_loaded+1:batch_size, :, :, :] = 0
+            frames[frames_loaded + 1 : batch_size, :, :, :] = 0
             frames_loaded = 0
         else:
             if frames is None:
-                frames = np.empty((batch_size, input_frame.shape[0], input_frame.shape[1], input_frame.shape[2]), dtype=input_frame.dtype)
+                frames = np.empty(
+                    (
+                        batch_size,
+                        input_frame.shape[0],
+                        input_frame.shape[1],
+                        input_frame.shape[2],
+                    ),
+                    dtype=input_frame.dtype,
+                )
             frames[frames_loaded, :, :, :] = input_frame.copy()[:, :, :]
             frames_loaded = (frames_loaded + 1) % batch_size
 
@@ -350,7 +382,7 @@ def inference_worker(model_path: Path, anchors_path: Path, batch_size: int, vide
             shared_dict.update(count_detections(inf_res[-1]))
 
             for i, resi in enumerate(inf_res):
-                bird_detected = bool(resi.detections) # detections is a list
+                bird_detected = bool(resi.detections)  # detections is a list
                 wait_counter = 0 if bird_detected else wait_counter + 1
 
                 # print number of detections to terminal
@@ -385,10 +417,10 @@ def inference_worker(model_path: Path, anchors_path: Path, batch_size: int, vide
             else:
                 to_keep.append(i)
         videos_to_wait[:] = [videos_to_wait[i] for i in to_keep]
-        
+
         if type(input_frame) != np.ndarray:
             break
-    
+
     manager.shutdown()
     prom_exporter_worker.terminate()
     prom_exporter_worker.join()
@@ -493,26 +525,31 @@ def video_writer_worker(
 app = Flask(__name__)
 registry = CollectorRegistry()
 bird_gauge = Gauge(
-    "bird_species_count", 
-    "Number of birds per species", 
-    ["species", "video"], 
-    registry=registry
+    "bird_species_count",
+    "Number of birds per species",
+    ["species", "video"],
+    registry=registry,
 )
 
+
 # Flask route to serve metrics
-@app.route('/metrics')
+@app.route("/metrics")
 def metrics():
     """Endpoint to expose Prometheus metrics."""
     return Response(generate_latest(registry), content_type=CONTENT_TYPE_LATEST)
 
+
 def start_flask_app(shared_dict, video, port):
     """Start the Flask app and periodically update Prometheus metrics."""
+
     @app.before_request
     def update_metrics():
         """Update bird species metrics before each request."""
         for species in CLASS_NAMES:
             bird_gauge.labels(species=species, video=video).set(shared_dict[species])
+
     app.run(host="0.0.0.0", port=port)
+
 
 def main():
     parser = argparse.ArgumentParser(description="Detect birds from a video feed.")
@@ -566,7 +603,7 @@ def main():
         "-t",
         type=int,
         default=9093,
-        help="Port for metrics exporter to listen on."
+        help="Port for metrics exporter to listen on.",
     )
     parser.add_argument(
         "--npu-cores",
@@ -590,7 +627,6 @@ def main():
         npu_cores = [int(n) for n in args.npu_cores.split(",")]
     except TypeError:
         raise TypeError("Selected NPU cores must be integers.")
-    #model = rknn_yolov5.model(args.model_path, anchors, npu_cores=npu_cores)
 
     # open video and define some metadata
     cap = open_video(args.video)
@@ -617,25 +653,27 @@ Saving detections to MySQL database: http://localhost:3306, grafana_data.metrics
 
 Beginning processing...
 """,
-    file=sys.stderr)
-        
+        file=sys.stderr,
+    )
+
     # get inference worker ready
-    frame_queue = mp.Queue(maxsize=100) # limit queue for when write becomes a problem
+    frame_queue = mp.Queue(maxsize=100)  # limit queue for when write becomes a problem
     worker = mp.Process(
         target=inference_worker,
         args=(
-            args.model_path, 
+            args.model_path,
             args.anchors,
-            args.batch_size, 
-            args.video, 
-            args.metrics_port, 
-            frame_queue, 
-            fps, 
-            wait_limit, 
-            args.output_dir, 
-            w, 
-            h, 
+            args.batch_size,
+            args.video,
+            args.metrics_port,
+            frame_queue,
+            fps,
+            wait_limit,
+            args.output_dir,
+            w,
+            h,
             args.video_name_prefix,
+            npu_cores
         ),
     )
     worker.start()
@@ -659,6 +697,7 @@ Beginning processing...
     cap.release()
 
     frame_queue.put("DONE")
+
 
 if __name__ == "__main__":
     main()
