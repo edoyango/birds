@@ -324,6 +324,37 @@ def inference_worker(
     video_name_prefix: str,
     npu_cores: list,
 ):
+    """
+    Performs batched inference on video frames using an RKNN YOLOv5 model, writes results to video files,
+    and exports detection metrics via a Prometheus-compatible Flask server.
+
+    Args:
+        model_path (Path): Path to the compiled RKNN model.
+        anchors_path (Path): Path to the file containing anchor box definitions.
+        batch_size (int): Number of frames to process in each inference batch.
+        video (str): Identifier for the input video source (used for metrics labeling).
+        metrics_port (int): Port to expose Prometheus metrics via a Flask app.
+        frame_queue (mp.Queue): Multiprocessing queue that receives frames (as np.ndarray) from a video reader.
+        fps (int): Expected frame rate (used in video writer setup).
+        wait_limit (int): Maximum number of consecutive frames without detections before video writer is stopped.
+        output_dir (Path): Directory to store output video files containing bird detections.
+        w (int): Width of the video frames.
+        h (int): Height of the video frames.
+        video_name_prefix (str): Prefix to prepend to all output video filenames.
+        npu_cores (list): List of NPU core indices to use during inference.
+
+    Returns:
+        None
+
+    Notes:
+        - Starts a child process to serve Prometheus metrics for detection statistics.
+        - Loads anchors and initializes the RKNN model for inference.
+        - Batches incoming frames from `frame_queue` and runs detection inference when a full batch is collected.
+        - For each frame, draws detections and writes annotated frames to a video file if birds are detected.
+        - Automatically handles cleanup of video writers and Prometheus exporter process on completion.
+        - Stops processing when a non-`np.ndarray` object is received from the queue (acts as termination signal).
+        - Uses a shared manager dictionary to expose detection counts for real-time metric reporting.
+    """
 
     videos_to_wait = []
 
