@@ -1,6 +1,6 @@
 [project]
 name = "birdector"
-version = "0.2.6"
+version = "0.3.0"
 dependencies = [
     "torch",
     "torchvision",
@@ -54,5 +54,6 @@ cmake.args = [
 "-DCMAKE_BUILD_TYPE=Release",
 "-DENABLE_ASAN=OFF",
 "-DDISABLE_RGA=OFF",
-"-DCMAKE_CXX_FLAGS=-O2 -march=native -mtune=native",
-"-DCMAKE_C_FLAGS=-O2 -march=native -mtune=native"]
+"-DCMAKE_CXX_FLAGS=-O3 -march=native -mtune=native",
+"-DCMAKE_C_FLAGS=-O3 -march=native -mtune=native",
+]
