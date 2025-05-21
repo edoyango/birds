@@ -298,6 +298,108 @@ class detected_bird_video:
         return self.opened
 
 
+def inference_worker(model_path: Path, anchors_path: Path, batch_size: int, video: str, metrics_port: int, frame_queue: mp.Queue, fps: int, wait_limit: int, output_dir: Path, w: int, h: int, video_name_prefix: str):        
+
+    videos_to_wait = []
+
+    # start worker to broadcast data for prometheus
+    manager = mp.Manager()
+    shared_dict = manager.dict()
+    prom_exporter_worker = mp.Process(
+        target=start_flask_app,
+        args=(
+            shared_dict,
+            video,
+            metrics_port
+        ),
+    )
+    prom_exporter_worker.start()
+    
+    try:
+
+        # load anchors
+        with open(anchors_path, "r") as f:
+            values = [float(_v) for _v in f.readlines()]
+            anchors = np.array(values).reshape(-1, 6)
+        print("use anchors from '{}', which is {}".format(anchors_path, anchors), file=sys.stderr)
+
+        model = rknn_yolov5.model(model_path, anchors, npu_cores=[0,1,2])
+
+        # begin reading
+        iframe = 0
+        wait_counter = sys.maxsize
+        output_video = None
+        frames_loaded = 0
+        frames = None
+        while True:
+
+            # read frame from input feed (expecting 10fps)
+            input_frame = frame_queue.get(timeout=10)
+
+            if type(input_frame) != np.ndarray:
+                # finish off batch
+                frames[frames_loaded+1:batch_size, :, :, :] = 0
+                frames_loaded = 0
+            else:
+                if frames is None:
+                    frames = np.empty((batch_size, input_frame.shape[0], input_frame.shape[1], input_frame.shape[2]), dtype=input_frame.dtype)
+                frames[frames_loaded, :, :, :] = input_frame.copy()[:, :, :]
+                frames_loaded = (frames_loaded + 1) % batch_size
+
+            if frames_loaded == 0:
+                # inference
+                inf_res = model.inference(frames)
+                shared_dict.update(count_detections(inf_res[-1]))
+
+                for i, resi in enumerate(inf_res):
+                    bird_detected = bool(resi.detections) # detections is a list
+                    wait_counter = 0 if bird_detected else wait_counter + 1
+
+                    # print number of detections to terminal
+                    print(
+                        f"frame {iframe} {len(resi.detections)} birds",
+                        file=sys.stderr,
+                    )
+
+                    if wait_counter < wait_limit:
+                        if not output_video or not output_video.isOpened():
+                            output_video = detected_bird_video(
+                                output_dir, 10, w, h, 50, 0.9, video_name_prefix
+                            )
+                        output_video.write(
+                            # I think the draw api has changed
+                            trigger_frame=resi.draw(conf=False),
+                            original_frame=frames[i].copy(),
+                            infres=resi,
+                        )
+
+                    elif output_video and output_video.isOpened():
+                        output_video.release()
+                        videos_to_wait.append(output_video)
+
+                    iframe += 1
+
+            # cleanup any finished video writer workers
+            to_keep = []
+            for i, v in enumerate(videos_to_wait):
+                if v.worker.exitcode is not None:
+                    v.worker.join()
+                else:
+                    to_keep.append(i)
+            videos_to_wait[:] = [videos_to_wait[i] for i in to_keep]
+            
+            if type(input_frame) != np.ndarray:
+                break
+    
+    finally:
+        manager.shutdown()
+        prom_exporter_worker.terminate()
+        prom_exporter_worker.join()
+        if output_video and output_video.isOpened():
+            output_video.release()
+        model.release()
+
+
 def video_writer_worker(
     queue: mp.Queue,
     fps: int,
@@ -471,21 +573,22 @@ def main():
         default="-1",
         help="RK3588 NPU cores to use e.g. 0,1 will use cores 0 and 1. Passing -1 will choose 1 random core.",
     )
+    parser.add_argument(
+        "--batch-size",
+        "-b",
+        type=int,
+        default=1,
+        help="Batch size of images to pass to RKNPU for inference. Must match with input RKNN model.",
+    )
 
     args = parser.parse_args()
-
-    # load anchors
-    with open(args.anchors, "r") as f:
-        values = [float(_v) for _v in f.readlines()]
-        anchors = np.array(values).reshape(-1, 6)
-    print("use anchors from '{}', which is {}".format(args.anchors, anchors), file=sys.stderr)
 
     # init model
     try:
         npu_cores = [int(n) for n in args.npu_cores.split(",")]
     except TypeError:
         raise TypeError("Selected NPU cores must be integers.")
-    model = rknn_yolov5.model(args.model_path, anchors, npu_cores=npu_cores)
+    #model = rknn_yolov5.model(args.model_path, anchors, npu_cores=npu_cores)
 
     # open video and define some metadata
     cap = open_video(args.video)
@@ -514,29 +617,33 @@ Beginning processing...
 """,
     file=sys.stderr)
 
-    videos_to_wait = []
-
     # start try except finally clause for handling of multiprocessing
     try:
-
-        # start worker to broadcast data for prometheus
-        manager = mp.Manager()
-        shared_dict = manager.dict()
-        prom_exporter_worker = mp.Process(
-            target=start_flask_app,
+        
+        # get inference worker ready
+        frame_queue = mp.Queue(maxsize=100) # limit queue for when write becomes a problem
+        worker = mp.Process(
+            target=inference_worker,
             args=(
-                shared_dict,
-                args.video,
-                args.metrics_port
+                args.model_path, 
+                args.anchors,
+                args.batch_size, 
+                args.video, 
+                args.metrics_port, 
+                frame_queue, 
+                fps, 
+                wait_limit, 
+                args.output_dir, 
+                w, 
+                h, 
+                args.video_name_prefix,
             ),
         )
-        prom_exporter_worker.start()
+        worker.start()
 
         # begin reading
         suc = True
         iframe = 0
-        wait_counter = sys.maxsize
-        output_video = None
         while suc and iframe < total_frames:
 
             # read frame from input feed
@@ -545,64 +652,15 @@ Beginning processing...
             if not suc:
                 raise ("Error reading frame from input feed.")
 
-            # inference
-            inf_res = model.inference(frame)
-
-            # save to exporter every second
-            if iframe % int(fps) == 0: 
-                shared_dict.update(count_detections(inf_res))
-
-            bird_detected = bool(inf_res.detections) # detections is a list
-            wait_counter = 0 if bird_detected else wait_counter + 1
-
-            # print number of detections to terminal
-            print(
-                f"frame {iframe} {len(inf_res.detections)} birds",
-                file=sys.stderr,
-            )
-
-            if wait_counter < wait_limit:
-                if not output_video or not output_video.isOpened():
-                    output_video = detected_bird_video(
-                        args.output_dir, 10, w, h, 50, 0.9, args.video_name_prefix
-                    )
-                output_video.write(
-                    # I think the draw api has changed
-                    trigger_frame=inf_res.draw(conf=False),
-                    original_frame=frame.copy(),
-                    infres=inf_res,
-                )
-            elif output_video and output_video.isOpened():
-                output_video.release()
-                videos_to_wait.append(output_video)
+            frame_queue.put(frame.copy())
 
             iframe += 1
-
-            # cleanup any finished video writer workers
-            to_keep = []
-            for i, v in enumerate(videos_to_wait):
-                if v.worker.exitcode is not None:
-                    v.worker.join()
-                else:
-                    to_keep.append(i)
-            videos_to_wait[:] = [videos_to_wait[i] for i in to_keep]
 
     finally:
         # release cap (done first so any other process can use it asap)
         cap.release()
 
-        manager.shutdown()
-        
-        # close prometheus exporter
-        prom_exporter_worker.terminate()
-        prom_exporter_worker.join()
-
-        # release model
-        model.release()
-
-        # close video if its opened
-        if output_video and output_video.isOpened():
-            output_video.release()
+        frame_queue.put("DONE")
 
 if __name__ == "__main__":
     main()
