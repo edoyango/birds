@@ -5,6 +5,7 @@ import argparse
 import csv
 import datetime
 import logging
+import subprocess
 from pathlib import Path
 import random
 from collections import Counter
@@ -26,8 +27,21 @@ from . import rknn_yolov5
 
 logger = logging.getLogger(__name__)
 
-# add 1 to nice value so ffmpeg doesn't get in the way of the main processes
-FFMPEG_CMD = "nice -n 1 ffmpeg -y -hide_banner -loglevel error -i {input_video} -init_hw_device rkmpp=hw -filter_hw_device hw -vf hwupload,scale_rkrga=w=864:h=486 -c:v hevc_rkmpp -qp_init 20 {output_video}"
+
+def _ffmpeg_compress_cmd(input_video: Path, output_video: Path) -> list:
+    """Build the argv list for compressing one video with RK3588 HW acceleration."""
+    return [
+        # nice'd so ffmpeg doesn't get in the way of the main processes
+        "nice", "-n", "1",
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(input_video),
+        "-init_hw_device", "rkmpp=hw",
+        "-filter_hw_device", "hw",
+        "-vf", "hwupload,scale_rkrga=w=864:h=486",
+        "-c:v", "hevc_rkmpp",
+        "-qp_init", "20",
+        str(output_video),
+    ]
 
 
 def open_video(vname: Path) -> cv2.VideoCapture:
@@ -498,16 +512,17 @@ def video_writer_worker(
     Returns:
         None
 
-    Raises:
-        AssertionError: If compression fails or the compression command (`FFMPEG_CMD`) returns a non-zero error code.
-
     Notes:
         - The function processes frames from the provided queue in real-time, writing them to two separate video files.
-        - Once the queue signals completion ("DONE"), the function:
-            - Releases video resources.
-            - Compresses the output videos using an external `FFMPEG_CMD`.
-            - Deletes uncompressed videos if the total frame count is below the `minframes` threshold.
-            - Retains uncompressed videos probabilistically based on `p_keep` if compression succeeds.
+        - It finalizes (releases, compresses, cleans up) either when the queue signals completion
+          ("DONE") or after 10s of no new frames, so a stalled feed can't leave a video stuck
+          uncompressed and un-cataloged forever.
+        - Compresses trigger and original independently via ffmpeg; a failure on one is logged and
+          does not prevent the other from being compressed.
+        - Deletes uncompressed videos if the total frame count is below the `minframes` threshold.
+        - Otherwise, discards the full-resolution originals with probability `1 - p_keep` (i.e. keeps
+          them for training with probability `p_keep`), but never discards a video whose compression
+          failed.
     """
 
     # open caps
@@ -532,21 +547,35 @@ def video_writer_worker(
             original_path.unlink(missing_ok=True)
             return
 
-        err = os.system(
-            f"""{FFMPEG_CMD.format(input_video=trigger_path, output_video=compressed_trigger_path)}
-                {FFMPEG_CMD.format(input_video=original_path, output_video=compressed_original_path)}
-            """
-        )
-        # randomly keep fullres video for training
-        if random.random() < p_keep:
+        # compress trigger and original independently so one failing doesn't
+        # mask the other's exit code (the old code ran both through a single
+        # os.system() call and only ever saw the last command's status)
+        compressed_ok = {}
+        for name, src, dst in (
+            ("trigger", trigger_path, compressed_trigger_path),
+            ("original", original_path, compressed_original_path),
+        ):
+            try:
+                subprocess.run(
+                    _ffmpeg_compress_cmd(src, dst),
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                compressed_ok[name] = True
+            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                compressed_ok[name] = False
+                detail = e.stderr.strip() if isinstance(e, subprocess.CalledProcessError) and e.stderr else e
+                logger.error("Failed to compress %s video %s: %s", name, src, detail)
+
+        # randomly keep the full-resolution original for training (with
+        # probability p_keep), but never delete the only copy of a video
+        # whose compression failed
+        discard_fullres = random.random() >= p_keep
+        if discard_fullres and compressed_ok["trigger"]:
             trigger_path.unlink(missing_ok=True)
+        if discard_fullres and compressed_ok["original"]:
             original_path.unlink(missing_ok=True)
-        if err != 0:
-            logger.error(
-                "Error compressing output videos for %s (ffmpeg exit code %d)",
-                trigger_path,
-                err,
-            )
 
     # start reading frames from master
     nframes = 0
