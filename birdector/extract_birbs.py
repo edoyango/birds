@@ -66,7 +66,7 @@ def count_detections(inference_results: object_detect_result) -> dict:
     return {inference_results.class_names[k]: v for k, v in counts.items()}
 
 
-class detected_bird_video:
+class DetectedBirdVideo:
     """
     A class to manage video processing for detected bird instances, handling writing,
     metadata collection, and compression.
@@ -418,7 +418,7 @@ def inference_worker(
 
                 if wait_counter < wait_limit:
                     if not output_video or not output_video.isOpened():
-                        output_video = detected_bird_video(
+                        output_video = DetectedBirdVideo(
                             output_dir, 10, w, h, 50, 0.9, video_name_prefix
                         )
                     output_video.write(
