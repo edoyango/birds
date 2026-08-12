@@ -401,6 +401,16 @@ def inference_worker(
         - Uses a shared manager dictionary to expose detection counts for real-time metric reporting.
     """
 
+    # main()'s SIGTERM/SIGINT handler is inherited across fork - reset to
+    # the default disposition here, before this process forks any children
+    # of its own (the Prometheus exporter below, and a video_writer_worker
+    # per recording). Without this, prom_exporter_worker.terminate() (which
+    # sends SIGTERM) would just run the inherited handler instead of
+    # actually killing that process, and the .join() right after it would
+    # hang forever.
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
     videos_to_wait = []
 
     # start worker to broadcast data for prometheus
