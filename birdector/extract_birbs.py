@@ -452,7 +452,11 @@ def inference_worker(
                     ),
                     dtype=input_frame.dtype,
                 )
-            frames[frames_loaded, :, :, :] = input_frame.copy()[:, :, :]
+            # input_frame was just deserialized off frame_queue, so it's
+            # already an independent array - no aliasing risk, and the
+            # assignment below already copies its contents into `frames`,
+            # so an extra .copy() here would just be a wasted allocation
+            frames[frames_loaded, :, :, :] = input_frame
             frames_loaded = (frames_loaded + 1) % batch_size
             n_valid = batch_size if frames_loaded == 0 else None
 
