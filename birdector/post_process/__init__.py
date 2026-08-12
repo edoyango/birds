@@ -6,9 +6,40 @@ from pathlib import Path
 import cv2
 import os
 import tempfile
+import pandas as pd
 from .stack_gifs import stack_gifs
 from .parse_instances import parse_instances
 from .send_birb_summary import parse_csv_and_send
+
+
+def merge_meta_csvs(output_dir: Path) -> Path:
+    """
+    Merge all per-camera meta*.csv files in output_dir into one CSV.
+
+    Each camera writes its own meta-<prefix>.csv (see detected_bird_video
+    in extract_birbs.py) so that concurrent camera containers never append
+    to the same file. Downstream reporting (best-video selection, instance
+    counting) wants the whole day's detections as a single dataset, so
+    merge them here into a temporary file.
+
+    Parameters:
+    output_dir (Path): Directory to search for meta*.csv files.
+
+    Returns:
+    Path: Path to the merged CSV file.
+
+    Raises:
+    RuntimeError: If no meta*.csv files are found in output_dir.
+    """
+
+    meta_csvs = sorted(Path(output_dir).glob("meta*.csv"))
+    if not meta_csvs:
+        raise RuntimeError(f"No meta*.csv files found in {output_dir}")
+
+    merged = pd.concat((pd.read_csv(p) for p in meta_csvs), ignore_index=True)
+    merged_path = Path(tempfile.gettempdir()) / "meta-merged.csv"
+    merged.to_csv(merged_path, index=False)
+    return merged_path
 
 
 def vids2gif(best_vids: list[Path], vid_duration: float = 15) -> list[Path]:
@@ -57,7 +88,6 @@ def post_process(
     output_dir: Path,
     vid_duration: float,
     nvideos: int,
-    input_csv: Path,
     mailing_list_csv: Path,
     panel_id: int,
 ) -> None:
@@ -70,10 +100,10 @@ def post_process(
 
     Parameters:
     date (str): The date for the email subject.
-    output_dir (Path): Directory to store the output GIF and panel snapshot.
+    output_dir (Path): Directory containing the day's meta*.csv files, and where the output GIF and
+    panel snapshot are stored.
     vid_duration (float): Duration for the video clips to be converted into GIFs.
     nvideos (int): Number of best videos to select for GIF conversion.
-    input_csv (Path): Path to the input CSV file containing video data.
     mailing_list_csv (Path): Path to the CSV file containing the mailing list.
 
     Returns:
@@ -86,6 +116,9 @@ def post_process(
         raise RuntimeError(
             'Gmail password not found in "GMAIL_APP_PWD" environment variable.'
         )
+
+    # each camera writes its own meta-<prefix>.csv; merge them into one dataset
+    input_csv = merge_meta_csvs(output_dir)
 
     # get list of "best" videos
     best_vids = find_best_vids.main(vid_duration, nvideos, input_csv)
@@ -155,7 +188,6 @@ def main():
     parser.add_argument("-n", "--nvideos", type=int, default=5)
     parser.add_argument("-p", "--panel-id", type=int, default=None)
     parser.add_argument("output_dir", type=Path)
-    parser.add_argument("input_csv", type=Path)
     parser.add_argument("mailing_list_csv", type=Path)
 
     args = parser.parse_args()
@@ -165,7 +197,6 @@ def main():
         args.output_dir,
         args.video_duration,
         args.nvideos,
-        args.input_csv,
         args.mailing_list_csv,
         args.panel_id,
     )

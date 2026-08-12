@@ -4,9 +4,14 @@ import sys
 import argparse
 import csv
 import datetime
+import logging
+import signal
+import subprocess
+import threading
 from pathlib import Path
 import random
 from collections import Counter
+from queue import Empty as QueueEmpty, Full as QueueFull
 
 import numpy as np
 import multiprocessing as mp
@@ -19,20 +24,31 @@ from prometheus_client import (
     CONTENT_TYPE_LATEST,
 )
 
-OBJ_THRESH = 0.5
-NMS_THRESH = 0.5
-
-# The follew two param is for map test
-# OBJ_THRESH = 0.001
-# NMS_THRESH = 0.65
-
-IMG_SIZE = (800, 800)  # (width, height), such as (1280, 736)
-
 from .rknn_yolov5 import CLASS_NAMES, object_detect_result
 from . import rknn_yolov5
+from .frame_pool import FrameBufferPool, FramePoolExhausted
 
-# add 1 to nice value so ffmpeg doesn't get in the way of the main processes
-FFMPEG_CMD = "nice -n 1 ffmpeg -y -hide_banner -loglevel error -i {input_video} -init_hw_device rkmpp=hw -filter_hw_device hw -vf hwupload,scale_rkrga=w=864:h=486 -c:v hevc_rkmpp -qp_init 20 {output_video}"
+logger = logging.getLogger(__name__)
+
+# max frames in flight between the reader and inference processes; also
+# sizes the shared-memory frame buffer pool (see frame_pool.py)
+FRAME_QUEUE_MAXSIZE = 100
+
+
+def _ffmpeg_compress_cmd(input_video: Path, output_video: Path) -> list:
+    """Build the argv list for compressing one video with RK3588 HW acceleration."""
+    return [
+        # nice'd so ffmpeg doesn't get in the way of the main processes
+        "nice", "-n", "1",
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(input_video),
+        "-init_hw_device", "rkmpp=hw",
+        "-filter_hw_device", "hw",
+        "-vf", "hwupload,scale_rkrga=w=864:h=486",
+        "-c:v", "hevc_rkmpp",
+        "-qp_init", "20",
+        str(output_video),
+    ]
 
 
 def open_video(vname: Path) -> cv2.VideoCapture:
@@ -49,9 +65,25 @@ def open_video(vname: Path) -> cv2.VideoCapture:
     cap = cv2.VideoCapture(vname)
 
     # should make these params configurable
-    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"YUYV"))
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    requested_props = (
+        ("CAP_PROP_FOURCC", cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"YUYV")),
+        ("CAP_PROP_FRAME_WIDTH", cv2.CAP_PROP_FRAME_WIDTH, 1280),
+        ("CAP_PROP_FRAME_HEIGHT", cv2.CAP_PROP_FRAME_HEIGHT, 720),
+    )
+    for name, prop_id, value in requested_props:
+        # set() returning True only means the driver accepted the request,
+        # not that it took effect - some V4L2 devices silently ignore
+        # unsupported values, so read the property back to confirm
+        if not cap.set(prop_id, value):
+            logger.warning("%s could not be set to %s on %s", name, value, vname)
+        elif cap.get(prop_id) != value:
+            logger.warning(
+                "%s was set to %s on %s, but the device reports %s",
+                name,
+                value,
+                vname,
+                cap.get(prop_id),
+            )
 
     if cap.isOpened() == False:
         raise RuntimeError("Error reading video file")
@@ -75,7 +107,7 @@ def count_detections(inference_results: object_detect_result) -> dict:
     return {inference_results.class_names[k]: v for k, v in counts.items()}
 
 
-class detected_bird_video:
+class DetectedBirdVideo:
     """
     A class to manage video processing for detected bird instances, handling writing,
     metadata collection, and compression.
@@ -171,7 +203,11 @@ class detected_bird_video:
         self.original_firstframe_path = (
             self.original_firstframes_dir / f"original-{self.vid_name}.png"
         )
-        self.meta_csv = Path(output_path) / "meta.csv"  # stores all video metadata
+        # each camera gets its own metadata file: two containers sharing one
+        # output-dir (as happens when cameras are grouped by day) must not
+        # append to the same meta.csv without coordination.
+        meta_name = f"meta-{prefix.rstrip('-_')}.csv" if prefix else "meta.csv"
+        self.meta_csv = Path(output_path) / meta_name
 
         # get video writer worker ready
         self.frame_queue = mp.Queue(
@@ -224,11 +260,16 @@ class detected_bird_video:
             cv2.imwrite(self.trigger_firstframe_path, trigger_frame)
             cv2.imwrite(self.original_firstframe_path, original_frame)
 
-        # check video writer worker is still alive
-        if self.worker.exitcode:
+        # check video writer worker is still alive. exitcode is None while
+        # running and 0 on a clean exit, so a plain truthiness check misses a
+        # worker that exited cleanly but early (e.g. it gave up on a stalled
+        # frame supply) - that must still be treated as "no longer consuming
+        # frames", or frame_queue fills up and this call blocks forever.
+        if self.worker.exitcode is not None:
             self.worker.join()
             raise RuntimeError(
-                f"Worker has died with error code {self.worker.exitcode}"
+                f"Worker for {self.trigger_vid_path} is no longer running "
+                f"(exit code {self.worker.exitcode})"
             )
 
         self.frame_queue.put(
@@ -285,16 +326,15 @@ class detected_bird_video:
             header.append(k)
             row.append(str(v))
 
-        # append to meta.csv if it exists, otherwise create a new one with headers
-        if self.meta_csv.exists() and self.meta_csv.is_file():
-            with self.meta_csv.open(mode="a") as f:
-                csvwriter = csv.writer(f)
-                csvwriter.writerow(row)
-        else:
-            with self.meta_csv.open(mode="w") as f:
-                csvwriter = csv.writer(f)
+        # append to meta_csv, writing the header first only if the file is new/empty.
+        # opened purely in append mode (never "w") so a concurrent writer can only
+        # ever add rows, never truncate another writer's data.
+        write_header = not (self.meta_csv.exists() and self.meta_csv.stat().st_size > 0)
+        with self.meta_csv.open(mode="a", newline="") as f:
+            csvwriter = csv.writer(f)
+            if write_header:
                 csvwriter.writerow(header)
-                csvwriter.writerow(row)
+            csvwriter.writerow(row)
 
         # tag as closed
         self.opened = False
@@ -316,6 +356,7 @@ def inference_worker(
     video: str,
     metrics_port: int,
     frame_queue: mp.Queue,
+    frame_pool: FrameBufferPool,
     fps: int,
     wait_limit: int,
     output_dir: Path,
@@ -334,7 +375,10 @@ def inference_worker(
         batch_size (int): Number of frames to process in each inference batch.
         video (str): Identifier for the input video source (used for metrics labeling).
         metrics_port (int): Port to expose Prometheus metrics via a Flask app.
-        frame_queue (mp.Queue): Multiprocessing queue that receives frames (as np.ndarray) from a video reader.
+        frame_queue (mp.Queue): Multiprocessing queue that receives frame_pool buffer indices (int),
+            or the string "DONE" as a termination signal, from a video reader.
+        frame_pool (FrameBufferPool): Shared-memory pool the actual frame pixel data lives in - only
+            its buffer index travels through frame_queue.
         fps (int): Expected frame rate (used in video writer setup).
         wait_limit (int): Maximum number of consecutive frames without detections before video writer is stopped.
         output_dir (Path): Directory to store output video files containing bird detections.
@@ -349,32 +393,43 @@ def inference_worker(
     Notes:
         - Starts a child process to serve Prometheus metrics for detection statistics.
         - Loads anchors and initializes the RKNN model for inference.
-        - Batches incoming frames from `frame_queue` and runs detection inference when a full batch is collected.
+        - Batches incoming frames from `frame_queue`/`frame_pool` and runs detection inference when a
+          full batch is collected.
         - For each frame, draws detections and writes annotated frames to a video file if birds are detected.
         - Automatically handles cleanup of video writers and Prometheus exporter process on completion.
-        - Stops processing when a non-`np.ndarray` object is received from the queue (acts as termination signal).
-        - Uses a shared manager dictionary to expose detection counts for real-time metric reporting.
+        - Stops processing when the "DONE" sentinel is received from frame_queue.
+        - Updates Prometheus Gauge objects directly as each batch is processed; a background thread
+          in this same process serves them over HTTP for scraping.
     """
+
+    # main()'s SIGTERM/SIGINT handler is inherited across fork - reset to
+    # the default disposition here, before this process forks any children
+    # of its own (a video_writer_worker per recording). Without this,
+    # terminate() calls elsewhere in the pipeline would just run the
+    # inherited handler instead of actually killing the target process, and
+    # a .join() right after would hang forever.
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     videos_to_wait = []
 
-    # start worker to broadcast data for prometheus
-    manager = mp.Manager()
-    shared_dict = manager.dict()
-    prom_exporter_worker = mp.Process(
-        target=start_flask_app,
-        args=(shared_dict, video, metrics_port),
+    # serve Prometheus metrics on a background thread in this process rather
+    # than a separate one: it only needs to read counters that this process
+    # already computes, so a thread avoids both a second process and the
+    # multiprocessing.Manager server (its own process plus a pickled-proxy
+    # round trip for every dict access) that would otherwise be needed to
+    # share data with it. daemon=True since Flask's dev server has no clean
+    # programmatic shutdown - it exits with the process instead.
+    metrics_thread = threading.Thread(
+        target=start_flask_app, args=(metrics_port,), daemon=True
     )
-    prom_exporter_worker.start()
+    metrics_thread.start()
 
     # load anchors
     with open(anchors_path, "r") as f:
         values = [float(_v) for _v in f.readlines()]
         anchors = np.array(values).reshape(-1, 6)
-    print(
-        "use anchors from '{}', which is {}".format(anchors_path, anchors),
-        file=sys.stderr,
-    )
+    logger.info("use anchors from '%s', which is %s", anchors_path, anchors)
 
     model = rknn_yolov5.model(model_path, anchors, npu_cores=npu_cores)
 
@@ -386,14 +441,33 @@ def inference_worker(
     frames = None
     while True:
 
-        # read frame from input feed (expecting 10fps)
-        input_frame = frame_queue.get(timeout=10)
+        # read the next buffer index from the reader (expecting 10fps) - the
+        # actual frame pixels live in frame_pool's shared memory, not here
+        try:
+            item = frame_queue.get(timeout=10)
+        except QueueEmpty:
+            # no frame for 10s at an expected ~10fps means the reader process
+            # died or the camera feed stalled. Exit (after the same cleanup
+            # the normal termination path does, below) instead of hanging
+            # here indefinitely - main()'s put() will notice this process is
+            # gone and fail loudly so the container can actually restart.
+            logger.error(
+                "No frames received for 10s; assuming the frame reader died "
+                "or the camera feed stalled. Shutting down."
+            )
+            break
 
-        if type(input_frame) != np.ndarray:
-            # finish off batch
-            frames[frames_loaded + 1 : batch_size, :, :, :] = 0
+        is_terminator = item == "DONE"
+
+        if is_terminator:
+            # flush whatever's been loaded into this partial batch, rather
+            # than padding it out to batch_size with zeroed/stale frames and
+            # running inference (and potentially recording) on black frames
+            n_valid = frames_loaded
             frames_loaded = 0
         else:
+            buf_idx = item
+            input_frame = frame_pool.view(buf_idx)
             if frames is None:
                 frames = np.empty(
                     (
@@ -404,35 +478,56 @@ def inference_worker(
                     ),
                     dtype=input_frame.dtype,
                 )
-            frames[frames_loaded, :, :, :] = input_frame.copy()[:, :, :]
+            # copies out of shared memory into our own batch buffer, so it's
+            # safe to release the shared buffer immediately after
+            frames[frames_loaded, :, :, :] = input_frame
+            frame_pool.release(buf_idx)
             frames_loaded = (frames_loaded + 1) % batch_size
+            n_valid = batch_size if frames_loaded == 0 else None
 
-        if frames_loaded == 0:
-            # inference
-            inf_res = model.inference(frames)
-            shared_dict.update(count_detections(inf_res[-1]))
+        if n_valid:
+            # a full batch, or (only on shutdown) the final partial one
+            batch = frames[:n_valid]
+            inf_res = model.inference(batch)
+
+            # aggregate detections across every frame in the batch, not just
+            # the last one - with batch_size > 1 the old code only ever
+            # reflected 1 in every batch_size inferred frames in the
+            # exported bird_species_count metric
+            batch_counts = Counter()
+            for resi in inf_res:
+                batch_counts.update(count_detections(resi))
+            for species, count in batch_counts.items():
+                bird_gauge.labels(species=species, video=video).set(count)
 
             for i, resi in enumerate(inf_res):
                 bird_detected = bool(resi.detections)  # detections is a list
                 wait_counter = 0 if bird_detected else wait_counter + 1
 
-                # print number of detections to terminal
-                print(
-                    f"frame {iframe} {len(resi.detections)} birds",
-                    file=sys.stderr,
-                )
+                logger.debug("frame %d %d birds", iframe, len(resi.detections))
 
                 if wait_counter < wait_limit:
-                    if not output_video or not output_video.isOpened():
-                        output_video = detected_bird_video(
-                            output_dir, 10, w, h, 50, 0.9, video_name_prefix
+                    try:
+                        if not output_video or not output_video.isOpened():
+                            output_video = DetectedBirdVideo(
+                                output_dir, fps, w, h, 50, 0.9, video_name_prefix
+                            )
+                        output_video.write(
+                            # I think the draw api has changed
+                            trigger_frame=resi.draw(conf=False),
+                            original_frame=frames[i].copy(),
+                            infres=resi,
                         )
-                    output_video.write(
-                        # I think the draw api has changed
-                        trigger_frame=resi.draw(conf=False),
-                        original_frame=frames[i].copy(),
-                        infres=resi,
-                    )
+                    except RuntimeError:
+                        # writer process for this recording died or failed to
+                        # start; drop it and let the next detected frame open
+                        # a fresh recording instead of taking down the whole
+                        # camera's inference process over one bad recording
+                        logger.exception(
+                            "Lost the video writer for the current recording; "
+                            "starting a new one on the next detection."
+                        )
+                        output_video = None
 
                 elif output_video and output_video.isOpened():
                     output_video.release()
@@ -449,15 +544,16 @@ def inference_worker(
                 to_keep.append(i)
         videos_to_wait[:] = [videos_to_wait[i] for i in to_keep]
 
-        if type(input_frame) != np.ndarray:
+        if is_terminator:
             break
 
-    manager.shutdown()
-    prom_exporter_worker.terminate()
-    prom_exporter_worker.join()
     if output_video and output_video.isOpened():
         output_video.release()
     model.release()
+    frame_pool.close()
+    # metrics_thread is a daemon thread serving Flask's dev server, which has
+    # no clean programmatic shutdown - it's simply abandoned when this
+    # process exits right after this
 
 
 def video_writer_worker(
@@ -491,16 +587,17 @@ def video_writer_worker(
     Returns:
         None
 
-    Raises:
-        AssertionError: If compression fails or the compression command (`FFMPEG_CMD`) returns a non-zero error code.
-
     Notes:
         - The function processes frames from the provided queue in real-time, writing them to two separate video files.
-        - Once the queue signals completion ("DONE"), the function:
-            - Releases video resources.
-            - Compresses the output videos using an external `FFMPEG_CMD`.
-            - Deletes uncompressed videos if the total frame count is below the `minframes` threshold.
-            - Retains uncompressed videos probabilistically based on `p_keep` if compression succeeds.
+        - It finalizes (releases, compresses, cleans up) either when the queue signals completion
+          ("DONE") or after 10s of no new frames, so a stalled feed can't leave a video stuck
+          uncompressed and un-cataloged forever.
+        - Compresses trigger and original independently via ffmpeg; a failure on one is logged and
+          does not prevent the other from being compressed.
+        - Deletes uncompressed videos if the total frame count is below the `minframes` threshold.
+        - Otherwise, discards the full-resolution originals with probability `1 - p_keep` (i.e. keeps
+          them for training with probability `p_keep`), but never discards a video whose compression
+          failed.
     """
 
     # open caps
@@ -514,42 +611,78 @@ def video_writer_worker(
         (w, h),
     )
 
+    def finalize(nframes: int) -> None:
+        """Release the writers and compress (or discard) whatever was captured."""
+        cap_trigger.release()
+        cap_original.release()
+
+        # compress output videos, removing if they don't meet the minframes threshold + 1s worth of frames
+        if nframes < minframes + fps:
+            trigger_path.unlink(missing_ok=True)
+            original_path.unlink(missing_ok=True)
+            return
+
+        # compress trigger and original independently so one failing doesn't
+        # mask the other's exit code (the old code ran both through a single
+        # os.system() call and only ever saw the last command's status)
+        compressed_ok = {}
+        for name, src, dst in (
+            ("trigger", trigger_path, compressed_trigger_path),
+            ("original", original_path, compressed_original_path),
+        ):
+            try:
+                subprocess.run(
+                    _ffmpeg_compress_cmd(src, dst),
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                compressed_ok[name] = True
+            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                compressed_ok[name] = False
+                detail = e.stderr.strip() if isinstance(e, subprocess.CalledProcessError) and e.stderr else e
+                logger.error("Failed to compress %s video %s: %s", name, src, detail)
+
+        # randomly keep the full-resolution original for training (with
+        # probability p_keep), but never delete the only copy of a video
+        # whose compression failed
+        discard_fullres = random.random() >= p_keep
+        if discard_fullres and compressed_ok["trigger"]:
+            trigger_path.unlink(missing_ok=True)
+        if discard_fullres and compressed_ok["original"]:
+            original_path.unlink(missing_ok=True)
+
     # start reading frames from master
     nframes = 0
     try:
         while True:
-            res = queue.get(timeout=10)  # expecting frames to come in 10fps
+            try:
+                res = queue.get(timeout=10)  # expecting frames to come in 10fps
+            except QueueEmpty:
+                # camera feed stalled mid-recording: finalize what we have
+                # instead of leaving an uncompressed, un-cataloged video behind
+                logger.warning(
+                    "No frames received for 10s while recording %s; "
+                    "finalizing the %d frame(s) captured so far.",
+                    trigger_path,
+                    nframes,
+                )
+                finalize(nframes)
+                return
 
             # handle result
             if res == "DONE":
-                # release output video capture objects
-                cap_trigger.release()
-                cap_original.release()
-
-                # compress output videos, removing if they don't meet the minframes threshold + 1s worth of frames
-                if nframes < minframes + fps:
-                    trigger_path.unlink(missing_ok=True)
-                    original_path.unlink(missing_ok=True)
-                else:
-                    err = os.system(
-                        f"""{FFMPEG_CMD.format(input_video=trigger_path, output_video=compressed_trigger_path)}
-                            {FFMPEG_CMD.format(input_video=original_path, output_video=compressed_original_path)}
-                        """
-                    )
-                    # randomly keep fullres video for training
-                    if random.random() < p_keep:
-                        trigger_path.unlink(missing_ok=True)
-                        original_path.unlink(missing_ok=True)
-                    assert err == 0, "Error compressing output videos."
-                # break loop
-                break
+                finalize(nframes)
+                return
             else:
                 cap_trigger.write(res["trigger_frame"])
                 cap_original.write(res["original_frame"])
                 nframes += 1
-    except:
+    except Exception:
+        logger.exception("video_writer_worker for %s failed unexpectedly", trigger_path)
         cap_trigger.release()
         cap_original.release()
+        raise
 
 
 # Define Prometheus Gauges for metrics
@@ -570,16 +703,16 @@ def metrics():
     return Response(generate_latest(registry), content_type=CONTENT_TYPE_LATEST)
 
 
-def start_flask_app(shared_dict, video, port):
-    """Start the Flask app and periodically update Prometheus metrics."""
+def start_flask_app(port):
+    """Serve the /metrics endpoint. bird_gauge is updated directly by inference_worker
+    as each batch is processed; this just exposes whatever it currently holds.
 
-    @app.before_request
-    def update_metrics():
-        """Update bird species metrics before each request."""
-        for species in CLASS_NAMES:
-            bird_gauge.labels(species=species, video=video).set(shared_dict[species])
-
-    app.run(host="0.0.0.0", port=port)
+    Note: this is Werkzeug's development server, not a production WSGI server
+    (waitress, gunicorn, etc.) - acceptable here since it only serves periodic,
+    low-volume Prometheus scrapes rather than public traffic. threaded=True so
+    one slow/stalled scraping client can't block others from being served.
+    """
+    app.run(host="0.0.0.0", port=port, threaded=True)
 
 
 def main():
@@ -650,8 +783,32 @@ def main():
         default=1,
         help="Batch size of images to pass to RKNPU for inference. Must match with input RKNN model.",
     )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default=os.environ.get("BIRDECTOR_LOG_LEVEL", "INFO"),
+        help="Logging level (DEBUG, INFO, WARNING, ERROR). Defaults to the "
+        "BIRDECTOR_LOG_LEVEL env var, or INFO.",
+    )
+    parser.add_argument(
+        "--fps",
+        type=float,
+        default=10.0,
+        help="Frame rate of the input feed. cv2.CAP_PROP_FPS is unreliable "
+        "on some V4L2 devices, so this is a fixed value rather than being "
+        "read from the capture device; override if your source differs "
+        "from the 10fps default.",
+    )
 
     args = parser.parse_args()
+
+    # configured here (before any worker processes are forked) so child
+    # processes inherit the same logging setup
+    logging.basicConfig(
+        level=getattr(logging, args.log_level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(processName)s %(message)s",
+        stream=sys.stderr,
+    )
 
     # init model
     try:
@@ -661,7 +818,7 @@ def main():
 
     # open video and define some metadata
     cap = open_video(args.video)
-    fps = 10.0  # temporary fix
+    fps = args.fps
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     if args.max_frames == 0:
         args.max_frames = sys.maxsize
@@ -671,24 +828,44 @@ def main():
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     wait_limit = 50
-    print(
-        f"""INPUT VIDEO: {args.video}
-    Resolution: {cap.get(cv2.CAP_PROP_FRAME_HEIGHT)}x{int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}
-    FPS:        {fps}
-OUTPUT DIRECTORY: result/{{originals,triggers}}
-DETECTION MODEL: {args.model_path}
-WAIT LIMIT: {wait_limit} frames
-MAX FRAMES: {args.max_frames} frames
-
-Saving detections to MySQL database: http://localhost:3306, grafana_data.metrics ...
-
-Beginning processing...
-""",
-        file=sys.stderr,
+    logger.info(
+        "INPUT VIDEO: %s | resolution: %dx%d | fps: %s | output dir: %s | "
+        "model: %s | wait limit: %d frames | max frames: %s | "
+        "metrics: http://0.0.0.0:%d/metrics | beginning processing...",
+        args.video,
+        w,
+        h,
+        fps,
+        args.output_dir,
+        args.model_path,
+        wait_limit,
+        args.max_frames,
+        args.metrics_port,
     )
 
-    # get inference worker ready
-    frame_queue = mp.Queue(maxsize=100)  # limit queue for when write becomes a problem
+    # trap SIGTERM/SIGINT so `docker stop` (or Ctrl-C) stops reading new
+    # frames and lets the inference worker finish flushing/compressing its
+    # current recording instead of being killed mid-write. Without a
+    # handler, SIGTERM's default disposition kills the process immediately -
+    # no Python code, including cleanup, gets to run at all.
+    shutdown_requested = threading.Event()
+
+    def _handle_shutdown_signal(signum, _frame):
+        logger.info(
+            "Received signal %d; finishing up and shutting down.", signum
+        )
+        shutdown_requested.set()
+
+    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
+    signal.signal(signal.SIGINT, _handle_shutdown_signal)
+
+    # get inference worker ready. Frame pixel data travels through
+    # frame_pool's shared memory instead of being pickled through
+    # frame_queue on every frame - the queue only ever carries a small
+    # buffer index (or the "DONE" sentinel), sized to match the pool so it
+    # can never itself become a tighter bottleneck than the pool already is.
+    frame_pool = FrameBufferPool(shape=(h, w, 3), dtype=np.uint8, n_buffers=FRAME_QUEUE_MAXSIZE)
+    frame_queue = mp.Queue(maxsize=FRAME_QUEUE_MAXSIZE)
     worker = mp.Process(
         target=inference_worker,
         args=(
@@ -698,6 +875,7 @@ Beginning processing...
             args.video,
             args.metrics_port,
             frame_queue,
+            frame_pool,
             fps,
             wait_limit,
             args.output_dir,
@@ -709,25 +887,86 @@ Beginning processing...
     )
     worker.start()
 
-    # begin reading
-    suc = True
-    iframe = 0
-    while suc and iframe < total_frames:
+    try:
+        # begin reading
+        suc = True
+        iframe = 0
+        while suc and iframe < total_frames and not shutdown_requested.is_set():
 
-        # read frame from input feed
-        suc, frame = cap.read()
+            # read frame from input feed
+            suc, frame = cap.read()
 
-        if not suc:
-            raise ("Error reading frame from input feed.")
+            if not suc:
+                raise RuntimeError("Error reading frame from input feed.")
 
-        frame_queue.put(frame.copy())
+            # both puts below would otherwise block forever if the inference
+            # worker died and stopped draining them - a dead consumer would
+            # hang this process indefinitely instead of exiting, silently
+            # defeating the container's restart policy.
+            while True:
+                try:
+                    buf_idx = frame_pool.put(frame, timeout=10)
+                    break
+                except FramePoolExhausted:
+                    if not worker.is_alive():
+                        raise RuntimeError(
+                            f"Inference worker process died (exit code "
+                            f"{worker.exitcode}); aborting so the container "
+                            "can restart."
+                        )
+                    logger.warning(
+                        "Frame buffer pool has been exhausted for 10s; the "
+                        "inference worker may be falling behind."
+                    )
 
-        iframe += 1
+            while True:
+                try:
+                    frame_queue.put(buf_idx, timeout=10)
+                    break
+                except QueueFull:
+                    if not worker.is_alive():
+                        raise RuntimeError(
+                            f"Inference worker process died (exit code "
+                            f"{worker.exitcode}); aborting so the container "
+                            "can restart."
+                        )
+                    logger.warning(
+                        "Frame queue has been full for 10s; the inference "
+                        "worker may be falling behind."
+                    )
 
-    # release cap (done first so any other process can use it asap)
-    cap.release()
+            iframe += 1
 
-    frame_queue.put("DONE")
+        # release cap (done first so any other process can use it asap)
+        cap.release()
+
+        frame_queue.put("DONE")
+
+        if shutdown_requested.is_set():
+            # give the inference worker (and, transitively, any in-progress
+            # video_writer_worker) a real chance to flush and compress the
+            # current recording before this process exits. Bounded so a
+            # stuck worker can't block shutdown forever - pair with a docker
+            # stop_grace_period long enough to cover this wait, or Docker
+            # will SIGKILL everything before it elapses.
+            logger.info("Waiting up to 25s for the inference worker to finish...")
+            worker.join(timeout=25)
+            if worker.is_alive():
+                logger.warning(
+                    "Inference worker did not finish within the shutdown "
+                    "grace period; it may be terminated abruptly."
+                )
+        else:
+            worker.join()
+    finally:
+        cap.release()  # safe to call again if already released above
+        frame_pool.close()
+        if not worker.is_alive():
+            # only unlink once nothing (including this process) still needs
+            # the shared memory; if the worker is still alive here (e.g. the
+            # graceful-shutdown join above timed out) we leave it allocated
+            # rather than risk unlinking out from under it
+            frame_pool.unlink()
 
 
 if __name__ == "__main__":

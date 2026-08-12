@@ -26,7 +26,7 @@ class model():
 
         # calculate NPU core mask
         assert all(type(n) == int for n in npu_cores), "Failed to init rknn model: all elements in npu_cores must be int"
-        assert any(-1 <= n <= 2 for n in npu_cores), "Failed to init rknn model: npu_cores must contain elements between -1 and 2 (inclusive)"
+        assert all(-1 <= n <= 2 for n in npu_cores), "Failed to init rknn model: npu_cores must contain elements between -1 and 2 (inclusive)"
         if -1 in npu_cores:
             self._core_mask = _rknn_core_mask.RKNN_NPU_CORE_AUTO
         else:
@@ -58,4 +58,8 @@ class model():
             ctypes.c_bool(verbose)
         )
         assert ret==0, f"Failed to perform inference on RKNN model at {self.model_path}"
-        return [object_detect_result(res[i], img[i]) for i in range(bs)]
+        # normalize to a batch axis so imgs[i] is always the full i'th image:
+        # for a single unbatched (h, w, c) image, img[i] would otherwise
+        # slice its first row instead of returning the image itself
+        imgs = img[np.newaxis, ...] if img.ndim == 3 else img
+        return [object_detect_result(res[i], imgs[i]) for i in range(bs)]
