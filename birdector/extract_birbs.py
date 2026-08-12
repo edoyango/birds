@@ -712,7 +712,7 @@ Beginning processing...
         suc, frame = cap.read()
 
         if not suc:
-            raise ("Error reading frame from input feed.")
+            raise RuntimeError("Error reading frame from input feed.")
 
         frame_queue.put(frame.copy())
 
