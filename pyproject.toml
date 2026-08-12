@@ -10,6 +10,20 @@ dependencies = [
     "prometheus_client",
     "toml"
 ]
+
+[project.optional-dependencies]
+# Everything needed to run `pytest tests/` against the source tree directly
+# (PYTHONPATH=. pytest), without building the aarch64/rk3588-only native
+# extension. birdector.rknn_yolov5 itself is platform-gated to aarch64
+# Linux, so tests that touch it stub or mock around that boundary instead
+# of requiring the real target hardware.
+test = [
+    "pytest",
+    "numpy",
+    "opencv-python-headless",
+    "pillow",
+]
+
 requires-python = ">= 3.9"
 authors = [
     {name = "Edward Yang", email = "edward_yang_125@hotmail.com"},
@@ -37,6 +51,9 @@ Issues = "https://github.com/edoyango/birds/issues"
 extract-birbs = "birdector.extract_birbs:main"
 rknpu-exporter = "birdector.utils.rknpu_exporter:main"
 post-process = "birdector.post_process:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [build-system]
 requires = ["scikit-build-core"]
