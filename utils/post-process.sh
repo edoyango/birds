@@ -14,4 +14,4 @@ docker run \
     -e GMAIL_APP_PWD \
     --entrypoint post-process \
     ghcr.io/edoyango/birds \
-        -p 11 $output_dir $output_dir/meta.csv /app/email-lists.csv
+        -p 11 $output_dir /app/email-lists.csv

@@ -171,7 +171,11 @@ class detected_bird_video:
         self.original_firstframe_path = (
             self.original_firstframes_dir / f"original-{self.vid_name}.png"
         )
-        self.meta_csv = Path(output_path) / "meta.csv"  # stores all video metadata
+        # each camera gets its own metadata file: two containers sharing one
+        # output-dir (as happens when cameras are grouped by day) must not
+        # append to the same meta.csv without coordination.
+        meta_name = f"meta-{prefix.rstrip('-_')}.csv" if prefix else "meta.csv"
+        self.meta_csv = Path(output_path) / meta_name
 
         # get video writer worker ready
         self.frame_queue = mp.Queue(
@@ -285,16 +289,15 @@ class detected_bird_video:
             header.append(k)
             row.append(str(v))
 
-        # append to meta.csv if it exists, otherwise create a new one with headers
-        if self.meta_csv.exists() and self.meta_csv.is_file():
-            with self.meta_csv.open(mode="a") as f:
-                csvwriter = csv.writer(f)
-                csvwriter.writerow(row)
-        else:
-            with self.meta_csv.open(mode="w") as f:
-                csvwriter = csv.writer(f)
+        # append to meta_csv, writing the header first only if the file is new/empty.
+        # opened purely in append mode (never "w") so a concurrent writer can only
+        # ever add rows, never truncate another writer's data.
+        write_header = not (self.meta_csv.exists() and self.meta_csv.stat().st_size > 0)
+        with self.meta_csv.open(mode="a", newline="") as f:
+            csvwriter = csv.writer(f)
+            if write_header:
                 csvwriter.writerow(header)
-                csvwriter.writerow(row)
+            csvwriter.writerow(row)
 
         # tag as closed
         self.opened = False
