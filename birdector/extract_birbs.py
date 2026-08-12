@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 import random
 from collections import Counter
+from queue import Empty as QueueEmpty
 
 import numpy as np
 import multiprocessing as mp
@@ -222,11 +223,16 @@ class DetectedBirdVideo:
             cv2.imwrite(self.trigger_firstframe_path, trigger_frame)
             cv2.imwrite(self.original_firstframe_path, original_frame)
 
-        # check video writer worker is still alive
-        if self.worker.exitcode:
+        # check video writer worker is still alive. exitcode is None while
+        # running and 0 on a clean exit, so a plain truthiness check misses a
+        # worker that exited cleanly but early (e.g. it gave up on a stalled
+        # frame supply) - that must still be treated as "no longer consuming
+        # frames", or frame_queue fills up and this call blocks forever.
+        if self.worker.exitcode is not None:
             self.worker.join()
             raise RuntimeError(
-                f"Worker has died with error code {self.worker.exitcode}"
+                f"Worker for {self.trigger_vid_path} is no longer running "
+                f"(exit code {self.worker.exitcode})"
             )
 
         self.frame_queue.put(
@@ -413,16 +419,27 @@ def inference_worker(
                 logger.debug("frame %d %d birds", iframe, len(resi.detections))
 
                 if wait_counter < wait_limit:
-                    if not output_video or not output_video.isOpened():
-                        output_video = DetectedBirdVideo(
-                            output_dir, 10, w, h, 50, 0.9, video_name_prefix
+                    try:
+                        if not output_video or not output_video.isOpened():
+                            output_video = DetectedBirdVideo(
+                                output_dir, 10, w, h, 50, 0.9, video_name_prefix
+                            )
+                        output_video.write(
+                            # I think the draw api has changed
+                            trigger_frame=resi.draw(conf=False),
+                            original_frame=frames[i].copy(),
+                            infres=resi,
                         )
-                    output_video.write(
-                        # I think the draw api has changed
-                        trigger_frame=resi.draw(conf=False),
-                        original_frame=frames[i].copy(),
-                        infres=resi,
-                    )
+                    except RuntimeError:
+                        # writer process for this recording died or failed to
+                        # start; drop it and let the next detected frame open
+                        # a fresh recording instead of taking down the whole
+                        # camera's inference process over one bad recording
+                        logger.exception(
+                            "Lost the video writer for the current recording; "
+                            "starting a new one on the next detection."
+                        )
+                        output_video = None
 
                 elif output_video and output_video.isOpened():
                     output_video.release()
@@ -504,42 +521,64 @@ def video_writer_worker(
         (w, h),
     )
 
+    def finalize(nframes: int) -> None:
+        """Release the writers and compress (or discard) whatever was captured."""
+        cap_trigger.release()
+        cap_original.release()
+
+        # compress output videos, removing if they don't meet the minframes threshold + 1s worth of frames
+        if nframes < minframes + fps:
+            trigger_path.unlink(missing_ok=True)
+            original_path.unlink(missing_ok=True)
+            return
+
+        err = os.system(
+            f"""{FFMPEG_CMD.format(input_video=trigger_path, output_video=compressed_trigger_path)}
+                {FFMPEG_CMD.format(input_video=original_path, output_video=compressed_original_path)}
+            """
+        )
+        # randomly keep fullres video for training
+        if random.random() < p_keep:
+            trigger_path.unlink(missing_ok=True)
+            original_path.unlink(missing_ok=True)
+        if err != 0:
+            logger.error(
+                "Error compressing output videos for %s (ffmpeg exit code %d)",
+                trigger_path,
+                err,
+            )
+
     # start reading frames from master
     nframes = 0
     try:
         while True:
-            res = queue.get(timeout=10)  # expecting frames to come in 10fps
+            try:
+                res = queue.get(timeout=10)  # expecting frames to come in 10fps
+            except QueueEmpty:
+                # camera feed stalled mid-recording: finalize what we have
+                # instead of leaving an uncompressed, un-cataloged video behind
+                logger.warning(
+                    "No frames received for 10s while recording %s; "
+                    "finalizing the %d frame(s) captured so far.",
+                    trigger_path,
+                    nframes,
+                )
+                finalize(nframes)
+                return
 
             # handle result
             if res == "DONE":
-                # release output video capture objects
-                cap_trigger.release()
-                cap_original.release()
-
-                # compress output videos, removing if they don't meet the minframes threshold + 1s worth of frames
-                if nframes < minframes + fps:
-                    trigger_path.unlink(missing_ok=True)
-                    original_path.unlink(missing_ok=True)
-                else:
-                    err = os.system(
-                        f"""{FFMPEG_CMD.format(input_video=trigger_path, output_video=compressed_trigger_path)}
-                            {FFMPEG_CMD.format(input_video=original_path, output_video=compressed_original_path)}
-                        """
-                    )
-                    # randomly keep fullres video for training
-                    if random.random() < p_keep:
-                        trigger_path.unlink(missing_ok=True)
-                        original_path.unlink(missing_ok=True)
-                    assert err == 0, "Error compressing output videos."
-                # break loop
-                break
+                finalize(nframes)
+                return
             else:
                 cap_trigger.write(res["trigger_frame"])
                 cap_original.write(res["original_frame"])
                 nframes += 1
-    except:
+    except Exception:
+        logger.exception("video_writer_worker for %s failed unexpectedly", trigger_path)
         cap_trigger.release()
         cap_original.release()
+        raise
 
 
 # Define Prometheus Gauges for metrics
