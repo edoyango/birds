@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 import random
 from collections import Counter
-from queue import Empty as QueueEmpty
+from queue import Empty as QueueEmpty, Full as QueueFull
 
 import numpy as np
 import multiprocessing as mp
@@ -401,7 +401,19 @@ def inference_worker(
     while True:
 
         # read frame from input feed (expecting 10fps)
-        input_frame = frame_queue.get(timeout=10)
+        try:
+            input_frame = frame_queue.get(timeout=10)
+        except QueueEmpty:
+            # no frame for 10s at an expected ~10fps means the reader process
+            # died or the camera feed stalled. Exit (after the same cleanup
+            # the normal termination path does, below) instead of hanging
+            # here indefinitely - main()'s put() will notice this process is
+            # gone and fail loudly so the container can actually restart.
+            logger.error(
+                "No frames received for 10s; assuming the frame reader died "
+                "or the camera feed stalled. Shutting down."
+            )
+            break
 
         if type(input_frame) != np.ndarray:
             # finish off batch
@@ -792,7 +804,26 @@ def main():
         if not suc:
             raise RuntimeError("Error reading frame from input feed.")
 
-        frame_queue.put(frame.copy())
+        # put() has no timeout by default and would block forever if the
+        # inference worker died and stopped draining the queue - a dead
+        # consumer would otherwise hang this process indefinitely instead of
+        # exiting, silently defeating the container's restart policy.
+        while True:
+            try:
+                frame_queue.put(frame.copy(), timeout=10)
+                break
+            except QueueFull:
+                if not worker.is_alive():
+                    cap.release()
+                    raise RuntimeError(
+                        f"Inference worker process died (exit code "
+                        f"{worker.exitcode}); aborting so the container can "
+                        "restart."
+                    )
+                logger.warning(
+                    "Frame queue has been full for 10s; the inference "
+                    "worker may be falling behind."
+                )
 
         iframe += 1
 
