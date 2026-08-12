@@ -705,8 +705,14 @@ def metrics():
 
 def start_flask_app(port):
     """Serve the /metrics endpoint. bird_gauge is updated directly by inference_worker
-    as each batch is processed; this just exposes whatever it currently holds."""
-    app.run(host="0.0.0.0", port=port)
+    as each batch is processed; this just exposes whatever it currently holds.
+
+    Note: this is Werkzeug's development server, not a production WSGI server
+    (waitress, gunicorn, etc.) - acceptable here since it only serves periodic,
+    low-volume Prometheus scrapes rather than public traffic. threaded=True so
+    one slow/stalled scraping client can't block others from being served.
+    """
+    app.run(host="0.0.0.0", port=port, threaded=True)
 
 
 def main():
