@@ -19,15 +19,6 @@ from prometheus_client import (
     CONTENT_TYPE_LATEST,
 )
 
-OBJ_THRESH = 0.5
-NMS_THRESH = 0.5
-
-# The follew two param is for map test
-# OBJ_THRESH = 0.001
-# NMS_THRESH = 0.65
-
-IMG_SIZE = (800, 800)  # (width, height), such as (1280, 736)
-
 from .rknn_yolov5 import CLASS_NAMES, object_detect_result
 from . import rknn_yolov5
 
