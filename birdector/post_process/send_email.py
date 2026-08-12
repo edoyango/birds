@@ -156,7 +156,6 @@ if __name__ == "__main__":
         raise RuntimeError(
             'Gmail password not found in "GMAIL_APP_PWD" environment variable.'
         )
-    # send_email("edwardyang125@gmail.com", "gheextnekztkmelw", "edward_yang_125@hotmail.com", "test", "test")
     send_email(
         args.sender_name,
         args.sender_email,
