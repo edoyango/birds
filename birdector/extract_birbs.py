@@ -398,29 +398,32 @@ def inference_worker(
         - For each frame, draws detections and writes annotated frames to a video file if birds are detected.
         - Automatically handles cleanup of video writers and Prometheus exporter process on completion.
         - Stops processing when the "DONE" sentinel is received from frame_queue.
-        - Uses a shared manager dictionary to expose detection counts for real-time metric reporting.
+        - Updates Prometheus Gauge objects directly as each batch is processed; a background thread
+          in this same process serves them over HTTP for scraping.
     """
 
     # main()'s SIGTERM/SIGINT handler is inherited across fork - reset to
     # the default disposition here, before this process forks any children
-    # of its own (the Prometheus exporter below, and a video_writer_worker
-    # per recording). Without this, prom_exporter_worker.terminate() (which
-    # sends SIGTERM) would just run the inherited handler instead of
-    # actually killing that process, and the .join() right after it would
-    # hang forever.
+    # of its own (a video_writer_worker per recording). Without this,
+    # terminate() calls elsewhere in the pipeline would just run the
+    # inherited handler instead of actually killing the target process, and
+    # a .join() right after would hang forever.
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     videos_to_wait = []
 
-    # start worker to broadcast data for prometheus
-    manager = mp.Manager()
-    shared_dict = manager.dict()
-    prom_exporter_worker = mp.Process(
-        target=start_flask_app,
-        args=(shared_dict, video, metrics_port),
+    # serve Prometheus metrics on a background thread in this process rather
+    # than a separate one: it only needs to read counters that this process
+    # already computes, so a thread avoids both a second process and the
+    # multiprocessing.Manager server (its own process plus a pickled-proxy
+    # round trip for every dict access) that would otherwise be needed to
+    # share data with it. daemon=True since Flask's dev server has no clean
+    # programmatic shutdown - it exits with the process instead.
+    metrics_thread = threading.Thread(
+        target=start_flask_app, args=(metrics_port,), daemon=True
     )
-    prom_exporter_worker.start()
+    metrics_thread.start()
 
     # load anchors
     with open(anchors_path, "r") as f:
@@ -494,7 +497,8 @@ def inference_worker(
             batch_counts = Counter()
             for resi in inf_res:
                 batch_counts.update(count_detections(resi))
-            shared_dict.update(batch_counts)
+            for species, count in batch_counts.items():
+                bird_gauge.labels(species=species, video=video).set(count)
 
             for i, resi in enumerate(inf_res):
                 bird_detected = bool(resi.detections)  # detections is a list
@@ -543,13 +547,13 @@ def inference_worker(
         if is_terminator:
             break
 
-    manager.shutdown()
-    prom_exporter_worker.terminate()
-    prom_exporter_worker.join()
     if output_video and output_video.isOpened():
         output_video.release()
     model.release()
     frame_pool.close()
+    # metrics_thread is a daemon thread serving Flask's dev server, which has
+    # no clean programmatic shutdown - it's simply abandoned when this
+    # process exits right after this
 
 
 def video_writer_worker(
@@ -699,15 +703,9 @@ def metrics():
     return Response(generate_latest(registry), content_type=CONTENT_TYPE_LATEST)
 
 
-def start_flask_app(shared_dict, video, port):
-    """Start the Flask app and periodically update Prometheus metrics."""
-
-    @app.before_request
-    def update_metrics():
-        """Update bird species metrics before each request."""
-        for species in CLASS_NAMES:
-            bird_gauge.labels(species=species, video=video).set(shared_dict[species])
-
+def start_flask_app(port):
+    """Serve the /metrics endpoint. bird_gauge is updated directly by inference_worker
+    as each batch is processed; this just exposes whatever it currently holds."""
     app.run(host="0.0.0.0", port=port)
 
 
