@@ -124,7 +124,6 @@ if __name__ == "__main__":
         raise RuntimeError(
             'Gmail password not found in "GMAIL_APP_PWD" environment variable.'
         )
-    # send_email("edwardyang125@gmail.com", "gheextnekztkmelw", "edward_yang_125@hotmail.com", "test", "test")
     parse_csv_and_send(
         args.sender_name,
         args.sender_email,
