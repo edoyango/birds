@@ -58,4 +58,8 @@ class model():
             ctypes.c_bool(verbose)
         )
         assert ret==0, f"Failed to perform inference on RKNN model at {self.model_path}"
-        return [object_detect_result(res[i], img[i]) for i in range(bs)]
+        # normalize to a batch axis so imgs[i] is always the full i'th image:
+        # for a single unbatched (h, w, c) image, img[i] would otherwise
+        # slice its first row instead of returning the image itself
+        imgs = img[np.newaxis, ...] if img.ndim == 3 else img
+        return [object_detect_result(res[i], imgs[i]) for i in range(bs)]
