@@ -417,9 +417,13 @@ def inference_worker(
             )
             break
 
-        if type(input_frame) != np.ndarray:
-            # finish off batch
-            frames[frames_loaded + 1 : batch_size, :, :, :] = 0
+        is_terminator = type(input_frame) != np.ndarray
+
+        if is_terminator:
+            # flush whatever's been loaded into this partial batch, rather
+            # than padding it out to batch_size with zeroed/stale frames and
+            # running inference (and potentially recording) on black frames
+            n_valid = frames_loaded
             frames_loaded = 0
         else:
             if frames is None:
@@ -434,10 +438,12 @@ def inference_worker(
                 )
             frames[frames_loaded, :, :, :] = input_frame.copy()[:, :, :]
             frames_loaded = (frames_loaded + 1) % batch_size
+            n_valid = batch_size if frames_loaded == 0 else None
 
-        if frames_loaded == 0:
-            # inference
-            inf_res = model.inference(frames)
+        if n_valid:
+            # a full batch, or (only on shutdown) the final partial one
+            batch = frames[:n_valid]
+            inf_res = model.inference(batch)
             shared_dict.update(count_detections(inf_res[-1]))
 
             for i, resi in enumerate(inf_res):
@@ -484,7 +490,7 @@ def inference_worker(
                 to_keep.append(i)
         videos_to_wait[:] = [videos_to_wait[i] for i in to_keep]
 
-        if type(input_frame) != np.ndarray:
+        if is_terminator:
             break
 
     manager.shutdown()
