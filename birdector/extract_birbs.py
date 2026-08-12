@@ -4,6 +4,7 @@ import sys
 import argparse
 import csv
 import datetime
+import logging
 from pathlib import Path
 import random
 from collections import Counter
@@ -21,6 +22,8 @@ from prometheus_client import (
 
 from .rknn_yolov5 import CLASS_NAMES, object_detect_result
 from . import rknn_yolov5
+
+logger = logging.getLogger(__name__)
 
 # add 1 to nice value so ffmpeg doesn't get in the way of the main processes
 FFMPEG_CMD = "nice -n 1 ffmpeg -y -hide_banner -loglevel error -i {input_video} -init_hw_device rkmpp=hw -filter_hw_device hw -vf hwupload,scale_rkrga=w=864:h=486 -c:v hevc_rkmpp -qp_init 20 {output_video}"
@@ -365,10 +368,7 @@ def inference_worker(
     with open(anchors_path, "r") as f:
         values = [float(_v) for _v in f.readlines()]
         anchors = np.array(values).reshape(-1, 6)
-    print(
-        "use anchors from '{}', which is {}".format(anchors_path, anchors),
-        file=sys.stderr,
-    )
+    logger.info("use anchors from '%s', which is %s", anchors_path, anchors)
 
     model = rknn_yolov5.model(model_path, anchors, npu_cores=npu_cores)
 
@@ -410,11 +410,7 @@ def inference_worker(
                 bird_detected = bool(resi.detections)  # detections is a list
                 wait_counter = 0 if bird_detected else wait_counter + 1
 
-                # print number of detections to terminal
-                print(
-                    f"frame {iframe} {len(resi.detections)} birds",
-                    file=sys.stderr,
-                )
+                logger.debug("frame %d %d birds", iframe, len(resi.detections))
 
                 if wait_counter < wait_limit:
                     if not output_video or not output_video.isOpened():
@@ -644,8 +640,23 @@ def main():
         default=1,
         help="Batch size of images to pass to RKNPU for inference. Must match with input RKNN model.",
     )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default=os.environ.get("BIRDECTOR_LOG_LEVEL", "INFO"),
+        help="Logging level (DEBUG, INFO, WARNING, ERROR). Defaults to the "
+        "BIRDECTOR_LOG_LEVEL env var, or INFO.",
+    )
 
     args = parser.parse_args()
+
+    # configured here (before any worker processes are forked) so child
+    # processes inherit the same logging setup
+    logging.basicConfig(
+        level=getattr(logging, args.log_level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(processName)s %(message)s",
+        stream=sys.stderr,
+    )
 
     # init model
     try:
@@ -665,20 +676,19 @@ def main():
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     wait_limit = 50
-    print(
-        f"""INPUT VIDEO: {args.video}
-    Resolution: {cap.get(cv2.CAP_PROP_FRAME_HEIGHT)}x{int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}
-    FPS:        {fps}
-OUTPUT DIRECTORY: result/{{originals,triggers}}
-DETECTION MODEL: {args.model_path}
-WAIT LIMIT: {wait_limit} frames
-MAX FRAMES: {args.max_frames} frames
-
-Saving detections to MySQL database: http://localhost:3306, grafana_data.metrics ...
-
-Beginning processing...
-""",
-        file=sys.stderr,
+    logger.info(
+        "INPUT VIDEO: %s | resolution: %dx%d | fps: %s | output dir: %s | "
+        "model: %s | wait limit: %d frames | max frames: %s | "
+        "metrics: http://0.0.0.0:%d/metrics | beginning processing...",
+        args.video,
+        w,
+        h,
+        fps,
+        args.output_dir,
+        args.model_path,
+        wait_limit,
+        args.max_frames,
+        args.metrics_port,
     )
 
     # get inference worker ready
