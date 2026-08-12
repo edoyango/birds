@@ -121,6 +121,7 @@ services:
       - "0"
       - "video2-"
       - "9094"
+      - "0,1,2"
       - "24"
     cpuset: 2-7
     networks:
