@@ -26,8 +26,13 @@ from prometheus_client import (
 
 from .rknn_yolov5 import CLASS_NAMES, object_detect_result
 from . import rknn_yolov5
+from .frame_pool import FrameBufferPool, FramePoolExhausted
 
 logger = logging.getLogger(__name__)
+
+# max frames in flight between the reader and inference processes; also
+# sizes the shared-memory frame buffer pool (see frame_pool.py)
+FRAME_QUEUE_MAXSIZE = 100
 
 
 def _ffmpeg_compress_cmd(input_video: Path, output_video: Path) -> list:
@@ -351,6 +356,7 @@ def inference_worker(
     video: str,
     metrics_port: int,
     frame_queue: mp.Queue,
+    frame_pool: FrameBufferPool,
     fps: int,
     wait_limit: int,
     output_dir: Path,
@@ -369,7 +375,10 @@ def inference_worker(
         batch_size (int): Number of frames to process in each inference batch.
         video (str): Identifier for the input video source (used for metrics labeling).
         metrics_port (int): Port to expose Prometheus metrics via a Flask app.
-        frame_queue (mp.Queue): Multiprocessing queue that receives frames (as np.ndarray) from a video reader.
+        frame_queue (mp.Queue): Multiprocessing queue that receives frame_pool buffer indices (int),
+            or the string "DONE" as a termination signal, from a video reader.
+        frame_pool (FrameBufferPool): Shared-memory pool the actual frame pixel data lives in - only
+            its buffer index travels through frame_queue.
         fps (int): Expected frame rate (used in video writer setup).
         wait_limit (int): Maximum number of consecutive frames without detections before video writer is stopped.
         output_dir (Path): Directory to store output video files containing bird detections.
@@ -384,10 +393,11 @@ def inference_worker(
     Notes:
         - Starts a child process to serve Prometheus metrics for detection statistics.
         - Loads anchors and initializes the RKNN model for inference.
-        - Batches incoming frames from `frame_queue` and runs detection inference when a full batch is collected.
+        - Batches incoming frames from `frame_queue`/`frame_pool` and runs detection inference when a
+          full batch is collected.
         - For each frame, draws detections and writes annotated frames to a video file if birds are detected.
         - Automatically handles cleanup of video writers and Prometheus exporter process on completion.
-        - Stops processing when a non-`np.ndarray` object is received from the queue (acts as termination signal).
+        - Stops processing when the "DONE" sentinel is received from frame_queue.
         - Uses a shared manager dictionary to expose detection counts for real-time metric reporting.
     """
 
@@ -418,9 +428,10 @@ def inference_worker(
     frames = None
     while True:
 
-        # read frame from input feed (expecting 10fps)
+        # read the next buffer index from the reader (expecting 10fps) - the
+        # actual frame pixels live in frame_pool's shared memory, not here
         try:
-            input_frame = frame_queue.get(timeout=10)
+            item = frame_queue.get(timeout=10)
         except QueueEmpty:
             # no frame for 10s at an expected ~10fps means the reader process
             # died or the camera feed stalled. Exit (after the same cleanup
@@ -433,7 +444,7 @@ def inference_worker(
             )
             break
 
-        is_terminator = type(input_frame) != np.ndarray
+        is_terminator = item == "DONE"
 
         if is_terminator:
             # flush whatever's been loaded into this partial batch, rather
@@ -442,6 +453,8 @@ def inference_worker(
             n_valid = frames_loaded
             frames_loaded = 0
         else:
+            buf_idx = item
+            input_frame = frame_pool.view(buf_idx)
             if frames is None:
                 frames = np.empty(
                     (
@@ -452,11 +465,10 @@ def inference_worker(
                     ),
                     dtype=input_frame.dtype,
                 )
-            # input_frame was just deserialized off frame_queue, so it's
-            # already an independent array - no aliasing risk, and the
-            # assignment below already copies its contents into `frames`,
-            # so an extra .copy() here would just be a wasted allocation
+            # copies out of shared memory into our own batch buffer, so it's
+            # safe to release the shared buffer immediately after
             frames[frames_loaded, :, :, :] = input_frame
+            frame_pool.release(buf_idx)
             frames_loaded = (frames_loaded + 1) % batch_size
             n_valid = batch_size if frames_loaded == 0 else None
 
@@ -527,6 +539,7 @@ def inference_worker(
     if output_video and output_video.isOpened():
         output_video.release()
     model.release()
+    frame_pool.close()
 
 
 def video_writer_worker(
@@ -832,8 +845,13 @@ def main():
     signal.signal(signal.SIGTERM, _handle_shutdown_signal)
     signal.signal(signal.SIGINT, _handle_shutdown_signal)
 
-    # get inference worker ready
-    frame_queue = mp.Queue(maxsize=100)  # limit queue for when write becomes a problem
+    # get inference worker ready. Frame pixel data travels through
+    # frame_pool's shared memory instead of being pickled through
+    # frame_queue on every frame - the queue only ever carries a small
+    # buffer index (or the "DONE" sentinel), sized to match the pool so it
+    # can never itself become a tighter bottleneck than the pool already is.
+    frame_pool = FrameBufferPool(shape=(h, w, 3), dtype=np.uint8, n_buffers=FRAME_QUEUE_MAXSIZE)
+    frame_queue = mp.Queue(maxsize=FRAME_QUEUE_MAXSIZE)
     worker = mp.Process(
         target=inference_worker,
         args=(
@@ -843,6 +861,7 @@ def main():
             args.video,
             args.metrics_port,
             frame_queue,
+            frame_pool,
             fps,
             wait_limit,
             args.output_dir,
@@ -854,59 +873,86 @@ def main():
     )
     worker.start()
 
-    # begin reading
-    suc = True
-    iframe = 0
-    while suc and iframe < total_frames and not shutdown_requested.is_set():
+    try:
+        # begin reading
+        suc = True
+        iframe = 0
+        while suc and iframe < total_frames and not shutdown_requested.is_set():
 
-        # read frame from input feed
-        suc, frame = cap.read()
+            # read frame from input feed
+            suc, frame = cap.read()
 
-        if not suc:
-            raise RuntimeError("Error reading frame from input feed.")
+            if not suc:
+                raise RuntimeError("Error reading frame from input feed.")
 
-        # put() has no timeout by default and would block forever if the
-        # inference worker died and stopped draining the queue - a dead
-        # consumer would otherwise hang this process indefinitely instead of
-        # exiting, silently defeating the container's restart policy.
-        while True:
-            try:
-                frame_queue.put(frame.copy(), timeout=10)
-                break
-            except QueueFull:
-                if not worker.is_alive():
-                    cap.release()
-                    raise RuntimeError(
-                        f"Inference worker process died (exit code "
-                        f"{worker.exitcode}); aborting so the container can "
-                        "restart."
+            # both puts below would otherwise block forever if the inference
+            # worker died and stopped draining them - a dead consumer would
+            # hang this process indefinitely instead of exiting, silently
+            # defeating the container's restart policy.
+            while True:
+                try:
+                    buf_idx = frame_pool.put(frame, timeout=10)
+                    break
+                except FramePoolExhausted:
+                    if not worker.is_alive():
+                        raise RuntimeError(
+                            f"Inference worker process died (exit code "
+                            f"{worker.exitcode}); aborting so the container "
+                            "can restart."
+                        )
+                    logger.warning(
+                        "Frame buffer pool has been exhausted for 10s; the "
+                        "inference worker may be falling behind."
                     )
+
+            while True:
+                try:
+                    frame_queue.put(buf_idx, timeout=10)
+                    break
+                except QueueFull:
+                    if not worker.is_alive():
+                        raise RuntimeError(
+                            f"Inference worker process died (exit code "
+                            f"{worker.exitcode}); aborting so the container "
+                            "can restart."
+                        )
+                    logger.warning(
+                        "Frame queue has been full for 10s; the inference "
+                        "worker may be falling behind."
+                    )
+
+            iframe += 1
+
+        # release cap (done first so any other process can use it asap)
+        cap.release()
+
+        frame_queue.put("DONE")
+
+        if shutdown_requested.is_set():
+            # give the inference worker (and, transitively, any in-progress
+            # video_writer_worker) a real chance to flush and compress the
+            # current recording before this process exits. Bounded so a
+            # stuck worker can't block shutdown forever - pair with a docker
+            # stop_grace_period long enough to cover this wait, or Docker
+            # will SIGKILL everything before it elapses.
+            logger.info("Waiting up to 25s for the inference worker to finish...")
+            worker.join(timeout=25)
+            if worker.is_alive():
                 logger.warning(
-                    "Frame queue has been full for 10s; the inference "
-                    "worker may be falling behind."
+                    "Inference worker did not finish within the shutdown "
+                    "grace period; it may be terminated abruptly."
                 )
-
-        iframe += 1
-
-    # release cap (done first so any other process can use it asap)
-    cap.release()
-
-    frame_queue.put("DONE")
-
-    if shutdown_requested.is_set():
-        # give the inference worker (and, transitively, any in-progress
-        # video_writer_worker) a real chance to flush and compress the
-        # current recording before this process exits. Bounded so a stuck
-        # worker can't block shutdown forever - pair with a docker
-        # stop_grace_period long enough to cover this wait, or Docker will
-        # SIGKILL everything before it elapses.
-        logger.info("Waiting up to 25s for the inference worker to finish...")
-        worker.join(timeout=25)
-        if worker.is_alive():
-            logger.warning(
-                "Inference worker did not finish within the shutdown grace "
-                "period; it may be terminated abruptly."
-            )
+        else:
+            worker.join()
+    finally:
+        cap.release()  # safe to call again if already released above
+        frame_pool.close()
+        if not worker.is_alive():
+            # only unlink once nothing (including this process) still needs
+            # the shared memory; if the worker is still alive here (e.g. the
+            # graceful-shutdown join above timed out) we leave it allocated
+            # rather than risk unlinking out from under it
+            frame_pool.unlink()
 
 
 if __name__ == "__main__":
