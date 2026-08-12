@@ -60,9 +60,25 @@ def open_video(vname: Path) -> cv2.VideoCapture:
     cap = cv2.VideoCapture(vname)
 
     # should make these params configurable
-    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"YUYV"))
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    requested_props = (
+        ("CAP_PROP_FOURCC", cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"YUYV")),
+        ("CAP_PROP_FRAME_WIDTH", cv2.CAP_PROP_FRAME_WIDTH, 1280),
+        ("CAP_PROP_FRAME_HEIGHT", cv2.CAP_PROP_FRAME_HEIGHT, 720),
+    )
+    for name, prop_id, value in requested_props:
+        # set() returning True only means the driver accepted the request,
+        # not that it took effect - some V4L2 devices silently ignore
+        # unsupported values, so read the property back to confirm
+        if not cap.set(prop_id, value):
+            logger.warning("%s could not be set to %s on %s", name, value, vname)
+        elif cap.get(prop_id) != value:
+            logger.warning(
+                "%s was set to %s on %s, but the device reports %s",
+                name,
+                value,
+                vname,
+                cap.get(prop_id),
+            )
 
     if cap.isOpened() == False:
         raise RuntimeError("Error reading video file")
