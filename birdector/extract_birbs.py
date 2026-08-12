@@ -444,7 +444,15 @@ def inference_worker(
             # a full batch, or (only on shutdown) the final partial one
             batch = frames[:n_valid]
             inf_res = model.inference(batch)
-            shared_dict.update(count_detections(inf_res[-1]))
+
+            # aggregate detections across every frame in the batch, not just
+            # the last one - with batch_size > 1 the old code only ever
+            # reflected 1 in every batch_size inferred frames in the
+            # exported bird_species_count metric
+            batch_counts = Counter()
+            for resi in inf_res:
+                batch_counts.update(count_detections(resi))
+            shared_dict.update(batch_counts)
 
             for i, resi in enumerate(inf_res):
                 bird_detected = bool(resi.detections)  # detections is a list
