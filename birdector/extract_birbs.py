@@ -464,7 +464,7 @@ def inference_worker(
                     try:
                         if not output_video or not output_video.isOpened():
                             output_video = DetectedBirdVideo(
-                                output_dir, 10, w, h, 50, 0.9, video_name_prefix
+                                output_dir, fps, w, h, 50, 0.9, video_name_prefix
                             )
                         output_video.write(
                             # I think the draw api has changed
@@ -743,6 +743,15 @@ def main():
         help="Logging level (DEBUG, INFO, WARNING, ERROR). Defaults to the "
         "BIRDECTOR_LOG_LEVEL env var, or INFO.",
     )
+    parser.add_argument(
+        "--fps",
+        type=float,
+        default=10.0,
+        help="Frame rate of the input feed. cv2.CAP_PROP_FPS is unreliable "
+        "on some V4L2 devices, so this is a fixed value rather than being "
+        "read from the capture device; override if your source differs "
+        "from the 10fps default.",
+    )
 
     args = parser.parse_args()
 
@@ -762,7 +771,7 @@ def main():
 
     # open video and define some metadata
     cap = open_video(args.video)
-    fps = 10.0  # temporary fix
+    fps = args.fps
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     if args.max_frames == 0:
         args.max_frames = sys.maxsize

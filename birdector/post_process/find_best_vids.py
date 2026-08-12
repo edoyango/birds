@@ -24,7 +24,7 @@ def calculate_simpsons_diversity(species_counts: list[int]) -> float:
     return 1 - sum(p**2 for p in proportions)
 
 
-def main(duration: float, num_videos: int, csv_path: Path) -> list[Path]:
+def main(duration: float, num_videos: int, csv_path: Path, fps: float = 10.0) -> list[Path]:
     """
     Process a CSV file to filter and rank videos based on duration and Simpson's Diversity Index.
 
@@ -32,6 +32,8 @@ def main(duration: float, num_videos: int, csv_path: Path) -> list[Path]:
     duration (float): Minimum duration of videos in seconds.
     num_videos (int): Number of top videos to return.
     csv_path (Path): Path to the CSV file containing video data.
+    fps (float): Frame rate the recordings were captured at, used to convert `duration` into a
+    frame count. Defaults to 10.0, matching extract_birbs.py's default capture rate.
 
     Returns:
     list: List of top video paths based on the Simpson's Diversity Index.
@@ -47,7 +49,7 @@ def main(duration: float, num_videos: int, csv_path: Path) -> list[Path]:
     metric_column = "simpsons_diversity"
 
     # Filter rows by minimum duration
-    min_frames = duration * 10  # assume 10 fps
+    min_frames = duration * fps
     filtered_data = data[data[frames_column] >= min_frames].copy()
 
     # apply weights to species columns
@@ -94,8 +96,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--csv", type=str, default="meta.csv", help="Path to the input CSV file."
     )
+    parser.add_argument(
+        "--fps",
+        type=float,
+        default=10.0,
+        help="Frame rate the recordings were captured at.",
+    )
     args = parser.parse_args()
 
-    top_videos = main(args.duration, args.num_videos, args.csv)
+    top_videos = main(args.duration, args.num_videos, args.csv, args.fps)
 
     print(" ".join(top_videos.astype(str)))
