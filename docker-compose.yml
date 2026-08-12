@@ -86,6 +86,7 @@ services:
       - ./models/yolov7-birbs-bs24.rknn:/app/models/yolov5-birbs.rknn
       - ./models/yolov7-anchors.txt:/app/models/anchors.txt
     restart: unless-stopped
+    stop_grace_period: 30s
     devices:
       - /dev/video0
     privileged: true
@@ -111,6 +112,7 @@ services:
       - ./models/yolov5-birbs.rknn:/app/models/yolov5-birbs.rknn
       - ./models/anchors.txt:/app/models/anchors.txt
     restart: unless-stopped
+    stop_grace_period: 30s
     devices:
       - /dev/video2
     privileged: true

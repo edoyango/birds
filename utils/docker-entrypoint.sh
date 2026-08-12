@@ -7,7 +7,11 @@ prom_port="${4:-9093}"
 npu_cores="${5:-'-1'}"
 batch_size="${6:-1}"
 
-extract-birbs \
+# exec replaces this shell with extract-birbs so it becomes PID 1 and
+# receives SIGTERM directly from `docker stop` - without exec, bash stays
+# PID 1 and (having no trap of its own) the signal never reaches the
+# Python process, which defeats extract-birbs' own SIGTERM handling.
+exec extract-birbs \
     --model_path /app/models/yolov5-birbs.rknn \
     --video "$video" \
     --anchors /app/models/anchors.txt \

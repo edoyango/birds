@@ -5,7 +5,9 @@ import argparse
 import csv
 import datetime
 import logging
+import signal
 import subprocess
+import threading
 from pathlib import Path
 import random
 from collections import Counter
@@ -771,6 +773,22 @@ def main():
         args.metrics_port,
     )
 
+    # trap SIGTERM/SIGINT so `docker stop` (or Ctrl-C) stops reading new
+    # frames and lets the inference worker finish flushing/compressing its
+    # current recording instead of being killed mid-write. Without a
+    # handler, SIGTERM's default disposition kills the process immediately -
+    # no Python code, including cleanup, gets to run at all.
+    shutdown_requested = threading.Event()
+
+    def _handle_shutdown_signal(signum, _frame):
+        logger.info(
+            "Received signal %d; finishing up and shutting down.", signum
+        )
+        shutdown_requested.set()
+
+    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
+    signal.signal(signal.SIGINT, _handle_shutdown_signal)
+
     # get inference worker ready
     frame_queue = mp.Queue(maxsize=100)  # limit queue for when write becomes a problem
     worker = mp.Process(
@@ -796,7 +814,7 @@ def main():
     # begin reading
     suc = True
     iframe = 0
-    while suc and iframe < total_frames:
+    while suc and iframe < total_frames and not shutdown_requested.is_set():
 
         # read frame from input feed
         suc, frame = cap.read()
@@ -831,6 +849,21 @@ def main():
     cap.release()
 
     frame_queue.put("DONE")
+
+    if shutdown_requested.is_set():
+        # give the inference worker (and, transitively, any in-progress
+        # video_writer_worker) a real chance to flush and compress the
+        # current recording before this process exits. Bounded so a stuck
+        # worker can't block shutdown forever - pair with a docker
+        # stop_grace_period long enough to cover this wait, or Docker will
+        # SIGKILL everything before it elapses.
+        logger.info("Waiting up to 25s for the inference worker to finish...")
+        worker.join(timeout=25)
+        if worker.is_alive():
+            logger.warning(
+                "Inference worker did not finish within the shutdown grace "
+                "period; it may be terminated abruptly."
+            )
 
 
 if __name__ == "__main__":
