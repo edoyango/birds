@@ -22,9 +22,13 @@ find_library(LIBRGA
     NAMES rga
 )
 
+# yolov5.cc/postprocess.cc: YOLOv5 and YOLOv7 (anchor-based, NMS on the CPU)
+# ../yolo26: YOLO26 (NMS-free, graph cut before box decoding). Shares model init/release and the result structs.
 add_library(${PROJECT_NAME} SHARED
     postprocess.cc
     yolov5.cc
+    ../yolo26/yolo26_postprocess.cc
+    ../yolo26/yolo26.cc
 )
 
 target_link_libraries(${PROJECT_NAME}
@@ -47,6 +51,7 @@ target_link_libraries(${PROJECT_NAME} Threads::Threads)
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../yolo26
     ${LIBRKNNRT_INCLUDES}
 )
 
