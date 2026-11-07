@@ -2,7 +2,7 @@
 
 `letterbox` mirrors `convert_image_with_letterbox` in src/utils/image_utils.c (centred, width aligned to a multiple of
 4, height to an even number) except that it resizes with cv2 instead of the RGA hardware. The pad value is 114, which is
-what Ultralytics trains and validates with. (The old YOLOv5/v7 path in src/yolov5 pads with 0.)
+what Ultralytics trains and validates with.
 
 `decode_yolo26` is the reference implementation of src/yolo26/yolo26_postprocess.cc.
 

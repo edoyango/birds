@@ -65,8 +65,8 @@ def main():
     path = Path(args.onnx)
     meta = json.loads(Path(args.meta or path.with_suffix(".outputs.json")).read_text())
     h, w = meta["input_hw"]
-    max_det = define(SRC / "yolov5" / "postprocess.h", "OBJ_NUMB_MAX_SIZE")
-    obj_class_num = define(SRC / "yolov5" / "postprocess.h", "OBJ_CLASS_NUM")
+    max_det = define(SRC / "yolo26" / "model.h", "OBJ_NUMB_MAX_SIZE")
+    obj_class_num = define(SRC / "yolo26" / "model.h", "OBJ_CLASS_NUM")
     if obj_class_num != meta["nc"]:
         raise SystemExit(f"model has {meta['nc']} classes but OBJ_CLASS_NUM={obj_class_num}")
 
@@ -75,7 +75,7 @@ def main():
     cxx = find_cxx(args.cxx)
     cmd = cxx + [
         "-std=c++17", "-O2", "-Wall",
-        f"-I{SRC / 'yolo26'}", f"-I{SRC / 'yolov5'}", f"-I{SRC / 'utils'}", f"-I{SRC / '3rdparty/include/rknpu2'}",
+        f"-I{SRC / 'yolo26'}", f"-I{SRC / 'utils'}", f"-I{SRC / '3rdparty/include/rknpu2'}",
         str(SRC / "yolo26/test/test_decode.cc"), str(SRC / "yolo26/yolo26_postprocess.cc"), "-o", str(exe),
     ]  # fmt: skip
     print("compiling:", " ".join(cmd))

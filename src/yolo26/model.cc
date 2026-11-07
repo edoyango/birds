@@ -15,12 +15,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
 
-#include "yolov5.h"
-#include "common.h"
+#include "model.h"
 #include "file_utils.h"
-#include "image_utils.h"
 
 static void dump_tensor_attr(rknn_tensor_attr *attr)
 {
@@ -31,7 +28,7 @@ static void dump_tensor_attr(rknn_tensor_attr *attr)
            get_qnt_type_string(attr->qnt_type), attr->zp, attr->scale);
 }
 
-extern "C" int init_yolov5_model(const char *model_path, rknn_app_context_t *app_ctx, _rknn_core_mask core_mask)
+extern "C" int init_model(const char *model_path, rknn_app_context_t *app_ctx, _rknn_core_mask core_mask)
 {
     int ret;
     int model_len = 0;
@@ -131,7 +128,7 @@ extern "C" int init_yolov5_model(const char *model_path, rknn_app_context_t *app
     return 0;
 }
 
-extern "C" int release_yolov5_model(rknn_app_context_t *app_ctx)
+extern "C" int release_model(rknn_app_context_t *app_ctx)
 {
     if (app_ctx->input_attrs != NULL)
     {
@@ -149,114 +146,4 @@ extern "C" int release_yolov5_model(rknn_app_context_t *app_ctx)
         app_ctx->rknn_ctx = 0;
     }
     return 0;
-}
-
-extern "C" int inference_yolov5_model(rknn_app_context_t *app_ctx, image_buffer_t *img, object_detect_result_list *od_results, const int anchor[3][6], const int batch_size = 1, bool verbose=false)
-{
-    int ret;
-    image_buffer_t dst_img;
-    letterbox_t letter_box[batch_size];
-    rknn_input inputs[app_ctx->io_num.n_input];
-    rknn_output outputs[app_ctx->io_num.n_output];
-    const float nms_threshold = NMS_THRESH;      // Default NMS threshold
-    const float box_conf_threshold = BOX_THRESH; // Default box threshold
-    int bg_color = 0;
-    void* old_addr[app_ctx->io_num.n_output];
-
-    if ((!app_ctx) || !(img) || (!od_results))
-    {
-        return -1;
-    }
-
-    memset(od_results, 0x00, sizeof(*od_results));
-    memset(&letter_box, 0, sizeof(letterbox_t));
-    memset(&dst_img, 0, sizeof(image_buffer_t));
-    memset(inputs, 0, sizeof(inputs));
-    memset(outputs, 0, sizeof(outputs));
-
-    // Pre Process
-    dst_img.width = app_ctx->model_width;
-    dst_img.height = app_ctx->model_height;
-    dst_img.format = IMAGE_FORMAT_RGB888;
-    dst_img.size = get_image_size(&dst_img);
-    dst_img.virt_addr = (unsigned char *)malloc(dst_img.size*batch_size);
-    if (dst_img.virt_addr == NULL)
-    {
-        printf("malloc buffer size:%d fail!\n", dst_img.size);
-        return -1;
-    }
-
-    // letterbox
-    image_buffer_t tmp_img = *img, tmp_dst_img = dst_img;
-    for (int i = 0; i < batch_size; ++i) {
-        ret = convert_image_with_letterbox(&tmp_img, &tmp_dst_img, &letter_box[i], bg_color, (int)verbose);
-        tmp_img.virt_addr += img->size;
-        tmp_dst_img.virt_addr += dst_img.size;
-    }
-    if (ret < 0)
-    {
-        printf("convert_image_with_letterbox fail! ret=%d\n", ret);
-        return -1;
-    }
-
-    // Set Input Data
-    inputs[0].index = 0;
-    inputs[0].type = RKNN_TENSOR_UINT8;
-    inputs[0].fmt = RKNN_TENSOR_NHWC;
-    inputs[0].size = app_ctx->model_width * app_ctx->model_height * app_ctx->model_channel * batch_size;
-    inputs[0].buf = dst_img.virt_addr;
-
-    ret = rknn_inputs_set(app_ctx->rknn_ctx, app_ctx->io_num.n_input, inputs);
-    if (ret < 0)
-    {
-        printf("rknn_input_set fail! ret=%d\n", ret);
-        return -1;
-    }
-
-    // Run
-    if (verbose) printf("rknn_run\n");
-    ret = rknn_run(app_ctx->rknn_ctx, nullptr);
-    if (ret < 0)
-    {
-        printf("rknn_run fail! ret=%d\n", ret);
-        return -1;
-    }
-
-    // Get Output
-    for (int i = 0; i < app_ctx->io_num.n_output; i++)
-    {
-        outputs[i].index = i;
-        outputs[i].want_float = (!app_ctx->is_quant);
-    }
-    ret = rknn_outputs_get(app_ctx->rknn_ctx, app_ctx->io_num.n_output, outputs, NULL);
-    if (ret < 0)
-    {
-        printf("rknn_outputs_get fail! ret=%d\n", ret);
-        goto out;
-    }
-
-    // Post Process
-    for (int d = 0; d < app_ctx->io_num.n_output; ++d) {
-        old_addr[d] = outputs[d].buf;
-        outputs[d].size /= batch_size;
-    }
-    for (int i = 0; i < batch_size; ++i) {
-        post_process(app_ctx, outputs, &letter_box[i], box_conf_threshold, nms_threshold, &od_results[i], anchor);
-        for (int d = 0; d < app_ctx->io_num.n_output; ++d) outputs[d].buf += outputs[d].size;
-    }
-    for (int d = 0; d < app_ctx->io_num.n_output; ++d) {
-        outputs[d].buf = old_addr[d];
-        outputs[d].size *= batch_size;
-    }
-
-    // Remeber to release rknn output
-    rknn_outputs_release(app_ctx->rknn_ctx, app_ctx->io_num.n_output, outputs);
-
-out:
-    if (dst_img.virt_addr != NULL)
-    {
-        free(dst_img.virt_addr);
-    }
-
-    return ret;
 }

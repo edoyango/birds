@@ -7,8 +7,7 @@
 #include "image_utils.h"
 #include "yolo26.h"
 
-// Ultralytics trains and validates with gray (114) letterbox padding, so use the same at inference. (The YOLOv5/v7 path
-// in yolov5.cc pads with 0.)
+// Ultralytics trains and validates with gray (114) letterbox padding, so use the same at inference.
 static const int LETTERBOX_PAD_COLOR = 114;
 
 // Channel order the model takes. training/convert_rknn.py records it in the model's custom string ("input_order=bgr"
