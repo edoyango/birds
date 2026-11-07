@@ -47,10 +47,13 @@ COPY ./src /app/src
 COPY ./pyproject.toml /app/pyproject.toml
 COPY ./README.md /app/README.md
 
-RUN pip install --no-cache-dir 'torch<1.14' 'torchvision<0.15' --index-url https://download.pytorch.org/whl/cpu 'numpy<2' && \
+# PyPI as an extra index: with the PyTorch index alone, dependencies and their build backends must come from it too, and
+# it only has some of them (typing_extensions 4.16 as an sdist, without the flit_core needed to build it).
+RUN pip install --no-cache-dir 'torch<1.14' 'torchvision<0.15' 'numpy<2' \
+        --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple && \
     pip install --no-cache-dir /app && \
     pip uninstall -y opencv-python && \
-    pip install --no-cache-dir opencv-python-headless
+    pip install --no-cache-dir 'opencv-python-headless<5'
 
 FROM python:3.10-slim AS runtime
 
