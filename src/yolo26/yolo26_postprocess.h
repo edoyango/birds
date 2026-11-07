@@ -4,7 +4,7 @@
 // arithmetic and the top-k:
 //     output 0  scores  [B, OBJ_CLASS_NUM, N]  class probabilities (the sigmoid is in the graph)
 //     output 1  dist    [B, 4, N]              left, top, right, bottom distances from the anchor point, in grid units
-// where N = (H/8)*(W/8) + (H/16)*(W/16) + (H/32)*(W/32) for an HxW input (9408 for 896x512).
+// where N = (H/8)*(W/8) + (H/16)*(W/16) + (H/32)*(W/32) for an HxW input (7056 for 768x448).
 //
 // The distances are cut before the anchor/stride arithmetic on purpose. Cutting after it (at absolute pixel
 // coordinates, as Rockchip's yolo26 example does) leaves INT8 only ~3.8 px per step at 704x704 and cost 11 points of
@@ -18,7 +18,7 @@
 #ifndef _BIRDS_YOLO26_POSTPROCESS_H_
 #define _BIRDS_YOLO26_POSTPROCESS_H_
 
-#include "yolov5.h" // rknn_app_context_t, object_detect_result_list, letterbox_t
+#include "model.h" // rknn_app_context_t, object_detect_result_list, letterbox_t
 
 static_assert(OBJ_CLASS_NUM != 4, "the dist tensor is told apart from the scores tensor by its channel count (4)");
 

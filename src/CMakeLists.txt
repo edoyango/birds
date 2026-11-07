@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(rknn_yolov5)
+project(birds_detector)
 
 if (ENABLE_ASAN)
 	message(STATUS "BUILD WITH ADDRESS SANITIZER")
@@ -9,10 +9,8 @@ if (ENABLE_ASAN)
 	set (CMAKE_LINKER_FLAGS_DEBUG "${CMAKE_LINKER_FLAGS_DEBUG} -fno-omit-frame-pointer -fsanitize=address -fPIC")
 endif ()
 
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/ 3rdparty.out)
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../utils/ utils.out)
-
-file(GLOB SRCS ${CMAKE_CURRENT_SOURCE_DIR}/*.cc)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/ 3rdparty.out)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/utils/ utils.out)
 
 # expecting librknrrt and librga to be external
 find_library(LIBRKNNRT
@@ -22,13 +20,11 @@ find_library(LIBRGA
     NAMES rga
 )
 
-# yolov5.cc/postprocess.cc: YOLOv5 and YOLOv7 (anchor-based, NMS on the CPU)
-# ../yolo26: YOLO26 (NMS-free, graph cut before box decoding). Shares model init/release and the result structs.
+# YOLO26 (NMS-free, graph cut before box decoding). yolo26/test is a host-side test harness, not part of the library.
 add_library(${PROJECT_NAME} SHARED
-    postprocess.cc
-    yolov5.cc
-    ../yolo26/yolo26_postprocess.cc
-    ../yolo26/yolo26.cc
+    yolo26/model.cc
+    yolo26/yolo26_postprocess.cc
+    yolo26/yolo26.cc
 )
 
 target_link_libraries(${PROJECT_NAME}
@@ -50,9 +46,8 @@ find_package(Threads REQUIRED)
 target_link_libraries(${PROJECT_NAME} Threads::Threads)
 
 target_include_directories(${PROJECT_NAME} PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/../yolo26
+    ${CMAKE_CURRENT_SOURCE_DIR}/yolo26
     ${LIBRKNNRT_INCLUDES}
 )
 
-install(TARGETS ${PROJECT_NAME} DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/../../birdector/rknn_yolov5 )
+install(TARGETS ${PROJECT_NAME} DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/../birdector/detector )
