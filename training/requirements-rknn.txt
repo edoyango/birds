@@ -1,0 +1,13 @@
+# ONNX -> RKNN conversion and the NPU simulator (x86 Linux only). Python 3.12 is the newest rknn-toolkit2 supports.
+#
+#   uv venv --python 3.12 .venv-rknn
+#   uv pip install --python .venv-rknn/bin/python -r training/requirements-rknn.txt \
+#       --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match
+#
+# Verified versions (2026-11). Keep rknn-toolkit2 equal to the librknnrt.so version in the Dockerfile
+# (RKNN_RUNTIME_VERSION).
+rknn-toolkit2==2.5.0   # pins: torch<=2.4.0, numpy<=1.26.4, onnx<=1.18.0, protobuf<=4.25.4
+torch==2.4.0+cpu
+numpy==1.26.4
+setuptools<81          # rknn-toolkit2 imports pkg_resources; setuptools 84.2 no longer ships it, 80.10 does
+pyyaml==6.0.3

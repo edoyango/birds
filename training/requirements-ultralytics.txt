@@ -1,0 +1,17 @@
+# Training + ONNX export on an Intel Arc GPU (A770). Verified on Python 3.12 (the newest the RKNN toolkit supports,
+# so one interpreter version serves both environments).
+#
+#   uv venv --python 3.12 .venv-ultra
+#   uv pip install --python .venv-ultra/bin/python -r training/requirements-ultralytics.txt \
+#       --extra-index-url https://download.pytorch.org/whl/xpu --index-strategy unsafe-best-match
+#
+# Needs the Intel compute runtime on the host (Ubuntu: libze-intel-gpu1 libze1 intel-opencl-icd).
+# Verified versions (2026-11):
+torch==2.15.0+xpu
+torchvision==0.29.2+xpu
+ultralytics==8.4.204   # >=8.4.59 is required for RKNN INT8 export; the YOLO26 head and `nms=False` need a recent release
+pyyaml==6.0.3
+onnx==1.23.2
+onnxruntime==1.31.1
+onnxslim==0.1.99
+onnxscript==0.7.2
