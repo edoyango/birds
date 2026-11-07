@@ -202,21 +202,25 @@ precision and recall at 0.5 match FP32 (0.953 / 0.915).
 - `Dockerfile` pins `librknnrt.so` to `RKNN_RUNTIME_VERSION=2.5.0`. Keep it equal to the toolkit that converted the
   model.
 - `docker-compose.yml` mounts `models/yolo26s-768x448-i8-bs24.rknn` (stored with Git LFS) at `/app/models/birbs.rknn`.
+  It is the 120-epoch yolo26s (`runs/detect/yolo26s_704_3-57_120`, `last.pt`) exported with the head clips (B = 14).
   To deploy another model, copy it into `models/` and change the mount; the batch size it was converted with must match
   the last argument of the service's `command`.
-- `--conf` / `BIRDS_CONF` default to 0.25. Pooled over all classes on the 720 board frames (1083 labelled birds):
+- `--conf` / `BIRDS_CONF` default to 0.5. For the model in `models/`, pooled over all classes on the board, all 2164
+  validation images (3582 labelled birds):
 
   | conf | precision | recall | F1 | false detections per frame |
   |---|---|---|---|---|
-  | 0.15 | 0.926 | 0.928 | 0.927 | 0.111 |
-  | 0.20 | 0.940 | 0.918 | 0.929 | 0.087 |
-  | **0.25** | **0.952** | **0.905** | **0.928** | **0.068** |
-  | 0.30 | 0.962 | 0.900 | 0.930 | 0.053 |
-  | 0.40 | 0.969 | 0.875 | 0.920 | 0.042 |
-  | 0.50 | 0.983 | 0.838 | 0.905 | 0.022 |
+  | 0.25 | 0.928 | 0.933 | 0.930 | 0.121 |
+  | 0.30 | 0.934 | 0.930 | 0.932 | 0.109 |
+  | 0.40 | 0.944 | 0.924 | 0.934 | 0.091 |
+  | **0.50** | **0.953** | **0.916** | **0.934** | **0.074** |
+  | 0.60 | 0.959 | 0.906 | 0.932 | 0.064 |
+  | 0.70 | 0.967 | 0.891 | 0.928 | 0.050 |
 
-  INT8 scores run lower than FP32 (FP32's F1 peaks near 0.4), so a threshold tuned on the ONNX model is too high for
-  the board.
+  With the head clips, the board's scores match FP32's (the F1-optimal threshold is 0.48 on the board, 0.47 in FP32).
+  The 25-epoch model's INT8 scores ran lower than FP32's (F1-optimal 0.26 vs 0.42), which is why the default used to be
+  0.25. The cause is the class-feature quantization in
+  [INT8 after long training](#int8-after-long-training-the-head-clips), at a smaller scale (about 0.5 logit).
 - Letterbox padding is 114, as in training.
 - Box coordinates are rounded to the nearest pixel. Against unrounded FP32 boxes, truncating to integers cost 0.6 points
   of mAP50-95 and rounding 0.3.
