@@ -1,7 +1,7 @@
 # YOLO26 training and RKNN deployment
 
 Trains a YOLO26 detector on an Intel Arc GPU (A770, no FP64), converts it for the RK3588 NPU (INT8), and runs it
-through the existing `birdector` inference code. The YOLOv5/YOLOv7 path is untouched and still the default.
+through the `birdector` inference code. It replaced the YOLOv7 model the project ran before.
 
 ```
 train_xpu.py ──► best.pt ──► export_onnx.py ──► .onnx ──► convert_rknn.py ──► .rknn ──► board (src/yolo26 + birdector)
@@ -14,7 +14,7 @@ train_xpu.py ──► best.pt ──► export_onnx.py ──► .onnx ──�
 Its one-to-one head emits one box per object, so there is **no NMS**. On the board the CPU does a threshold, a partial
 sort and the letterbox undo, about 3 ms per 24-frame batch. Everything else in the network runs on the NPU.
 
-Measured on the Orange Pi 5 Pro against the current YOLOv7 model (details in [Deploy](#5-deploy)):
+Measured on the Orange Pi 5 Pro against the YOLOv7 model it replaced (details in [Deploy](#5-deploy)):
 
 | | YOLOv7 864x864 INT8 | YOLO26s 768x448 INT8 |
 |---|---|---|
@@ -154,9 +154,10 @@ images on the board). P and R are at each row's F1-optimal threshold.
 ## 5. Deploy
 
 - `Dockerfile` pins `librknnrt.so` to `RKNN_RUNTIME_VERSION=2.5.0`. Keep it equal to the toolkit that converted the
-  model; it used to download from `master`. The image has to be rebuilt to pick this up.
-- Run with `extract-birbs --arch yolo26`, or in the container set `BIRDS_ARCH=yolo26` (see the commented block in
-  `docker-compose.yml`). Anchors are not used for `yolo26`.
+  model.
+- `docker-compose.yml` mounts `models/yolo26s-768x448-i8-bs24.rknn` (stored with Git LFS) at `/app/models/birbs.rknn`.
+  To deploy another model, copy it into `models/` and change the mount; the batch size it was converted with must match
+  the last argument of the service's `command`.
 - `--conf` / `BIRDS_CONF` default to 0.25. Pooled over all classes on the 720 board frames (1083 labelled birds):
 
   | conf | precision | recall | F1 | false detections per frame |
@@ -170,7 +171,7 @@ images on the board). P and R are at each row's F1-optimal threshold.
 
   INT8 scores run lower than FP32 (FP32's F1 peaks near 0.4), so a threshold tuned on the ONNX model is too high for
   the board.
-- Letterbox padding for `yolo26` is 114, as in training. The `yolov5` path pads with 0.
+- Letterbox padding is 114, as in training.
 - Box coordinates are rounded to the nearest pixel. Against unrounded FP32 boxes, truncating to integers cost 0.6 points
   of mAP50-95 and rounding 0.3.
 - Set `YOLO26_TIMING=1` to print per-stage wall and process-CPU milliseconds, and the guard count, for every batch.
@@ -180,7 +181,7 @@ images on the board). P and R are at each row's F1-optimal threshold.
 ### Colour order
 
 YOLO26 is trained on RGB and `cv2.VideoCapture` yields BGR; feeding BGR cut mAP50 from 0.88 to 0.45 (300 validation
-images, early checkpoint). For `arch="yolo26"`, `rknn_yolov5.model.inference` passes the frames as `IMAGE_FORMAT_BGR888`
+images, early checkpoint). `birdector.detector.model.inference` passes the frames as `IMAGE_FORMAT_BGR888`
 and the RGA letterbox writes the model input as RGB888, so the swap happens in the same hardware pass as the resize. The
 caller's frames are not modified, so drawing still uses them as BGR.
 
@@ -197,8 +198,6 @@ caller's frames are not modified, so drawing still uses them as BGR.
   352-403 ms (BGR model), CPU 85-113 vs 85-87 ms. Accuracy is the same within quantization noise: FP32 0.748 vs 0.748
   (identical metrics), INT8 simulator 0.732 vs 0.730, board 0.754 vs 0.753 (720 frames). Both kinds of model work with
   the same library, so either can be deployed.
-- The `yolov5` path passes pixels through unchanged as RGB888. If the YOLOv7 model was trained by Ultralytics-style code
-  on RGB images, it has been receiving BGR.
 
 ### Measured on an Orange Pi 5 Pro
 
@@ -207,7 +206,7 @@ RK3588, kernel 6.1.43, NPU driver 0.9.6. 24 real 864x486 frames per batch, NPU c
 
 | model | runtime | wall per batch | per frame | process CPU per batch |
 |---|---|---|---|---|
-| current YOLOv7, 864x864, INT8 | 2.3.2 | 1341 ms | 55.9 ms | 172 ms |
+| previous YOLOv7, 864x864, INT8 | 2.3.2 | 1341 ms | 55.9 ms | 172 ms |
 | YOLO26s, 768x448, INT8 | 2.5.0 | 350-400 ms | 14.7-16.8 ms | 83-87 ms |
 | YOLO26s, 768x448, FP16 | 2.5.0 | 928 ms | 38.7 ms | 716 ms |
 
@@ -258,7 +257,4 @@ on a frame where the clean slots have none). The same frame in the other 23 slot
   multiple of 16 (RGA is not tried), an RGA error (the frame is resized on the CPU), or a failed `imfill` (only YUV or
   fd-only buffers now). Each warning repeats on its 10th, 100th, 1000th, ... occurrence with the count, so it stays
   visible without flooding the log. The padding fill above is by design and does not warn.
-- `src/yolov5/yolov5.cc` does `void*` arithmetic, which g++ accepts and clang does not. Unrelated to this work.
-- `pyproject.toml` still pins `rknn-toolkit2==2.3.0`; the board does not use it (it only needs `librknnrt.so`), and the
-  conversion env is `requirements-rknn.txt`.
 - Nothing here was run on a board other than the Orange Pi 5 Pro.
