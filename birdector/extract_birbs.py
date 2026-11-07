@@ -389,9 +389,14 @@ def inference_worker(
         # read frame from input feed (expecting 10fps)
         input_frame = frame_queue.get(timeout=10)
 
+        n_valid = batch_size  # how many frames of this batch are real
         if type(input_frame) != np.ndarray:
-            # finish off batch
-            frames[frames_loaded + 1 : batch_size, :, :, :] = 0
+            # finish off batch: only the first frames_loaded frames are real (0 if the last batch was already complete).
+            # The unused slots are zeroed so the NPU gets a defined input, but their results are discarded below; they
+            # used to be counted, drawn and written to the output video like real frames.
+            n_valid = frames_loaded
+            if frames is not None:
+                frames[n_valid:batch_size, :, :, :] = 0
             frames_loaded = 0
         else:
             if frames is None:
@@ -407,12 +412,12 @@ def inference_worker(
             frames[frames_loaded, :, :, :] = input_frame.copy()[:, :, :]
             frames_loaded = (frames_loaded + 1) % batch_size
 
-        if frames_loaded == 0:
+        if frames_loaded == 0 and n_valid > 0:
             # inference
             inf_res = model.inference(frames)
-            shared_dict.update(count_detections(inf_res[-1]))
+            shared_dict.update(count_detections(inf_res[n_valid - 1]))
 
-            for i, resi in enumerate(inf_res):
+            for i, resi in enumerate(inf_res[:n_valid]):
                 bird_detected = bool(resi.detections)  # detections is a list
                 wait_counter = 0 if bird_detected else wait_counter + 1
 
