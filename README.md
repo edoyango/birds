@@ -29,7 +29,7 @@ docker compose up -d
 `.env` sets the image (`BIRDS_CONTAINER`). Each camera service takes, in order: the video device, the maximum number
 of frames (0 for no limit), a file name prefix, the Prometheus port, the NPU cores and the batch size. The batch size
 must equal the one the model was converted with (24 for the model in `models/`). `BIRDS_CONF` sets the score threshold
-(default 0.25).
+(default 0.5).
 
 Clips go to `/bird-detections/<date>/`. `utils/post-process.sh` runs the daily summary and `utils/clean-old.sh` deletes
 uncompressed clips older than a week.

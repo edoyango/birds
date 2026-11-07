@@ -86,7 +86,7 @@ services:
       # The batch size (last command argument) must match the one the model was converted with (training/README.md)
       - ./models/yolo26s-768x448-i8-bs24.rknn:/app/models/birbs.rknn
     environment:
-      - BIRDS_CONF=${BIRDS_CONF:-0.25}
+      - BIRDS_CONF=${BIRDS_CONF:-0.5}
     restart: unless-stopped
     devices:
       - /dev/video0
@@ -112,7 +112,7 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - ./models/yolo26s-768x448-i8-bs24.rknn:/app/models/birbs.rknn
     environment:
-      - BIRDS_CONF=${BIRDS_CONF:-0.25}
+      - BIRDS_CONF=${BIRDS_CONF:-0.5}
     restart: unless-stopped
     devices:
       - /dev/video2
