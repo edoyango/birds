@@ -45,7 +45,7 @@ build-backend = "scikit_build_core.build"
 [tool.scikit-build]
 cmake.version = ">=3.15"
 cmake.build-type = "Release"
-cmake.source-dir = "src/yolov5"
+cmake.source-dir = "src"
 
 cmake.args = [
 "-DTARGET_SOC=rk3588",

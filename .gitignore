@@ -12,3 +12,6 @@ runs
 **.jpg
 **.jpeg
 **.png
+
+# built by the package install (src/CMakeLists.txt)
+birdector/detector/*.so
