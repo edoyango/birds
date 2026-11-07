@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 """Export a trained YOLO26 checkpoint to ONNX for RKNN conversion, with the NMS-free (one-to-one) head.
 
-    python training/export_onnx.py runs/detect/<run>/weights/best.pt --imgsz 704
+    python training/export_onnx.py runs/detect/<run>/weights/last.pt --imgsz 448 768 --data-root /path/to/birds-3-57
 
-Writes <weights>.onnx and <weights>.outputs.json next to the checkpoint (or --out). The json names the two
+Writes <weights>.onnx and <weights>.outputs.json next to the checkpoint (or --out). The head gets clips that keep INT8
+conversion working after long training, with the class-feature bound measured on --data-root training images and all
+clips checked there to change no detection (see clip_head_levels and training/README.md). The json names the
 tensors `convert_rknn.py` cuts the graph at:
 
     scores  (1, nc, N)  class probabilities, sigmoid already applied
@@ -21,7 +23,9 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
 import onnx
+import onnx.numpy_helper
 from onnx import shape_inference
 
 
@@ -121,6 +125,145 @@ def find_distance_tensor(onnx_path, boxes):
     return sources.pop()
 
 
+def head_concats(model, scores, dist):
+    """The Concats that join the per-level class logits (behind `scores`) and the per-level distances (`dist`)."""
+    producer = {o: n for n in model.graph.node for o in n.output}
+    logit_cat, dist_cat = producer[producer[scores].input[0]], producer[dist]
+    for cat in (logit_cat, dist_cat):
+        if cat.op_type != "Concat":
+            raise SystemExit(f"expected a Concat of per-level tensors, found {cat.op_type} ({cat.name})")
+    return producer, logit_cat, dist_cat
+
+
+def class_conv_inputs(model, scores, dist):
+    """Per level, the final class Conv node (behind Reshape -> logit Concat) and the feature tensor it reads."""
+    producer, logit_cat, _ = head_concats(model, scores, dist)
+    convs = []
+    for name in logit_cat.input:
+        conv = producer[producer[name].input[0]]
+        if conv.op_type != "Conv":
+            raise SystemExit(f"expected the final class Conv behind {name}, found {conv.op_type}")
+        convs.append(conv)
+    return convs
+
+
+def clip_head_levels(model, scores, dist, logit_lim, dist_hi, cls_feat_hi):
+    """In each detection level, clip the class features that feed the final class conv to [-1, cls_feat_hi], and, before
+    the per-level tensors are concatenated into the two cut outputs, the class logits to [-logit_lim, logit_lim] and the
+    ltrb distances to [-1, dist_hi]. A bound of 0 leaves that tensor alone. Edits `model` in place.
+
+    INT8 gives each tensor one scale, and long training lets the head's background positions drift to huge values that
+    then set that scale. yolo26s after 120 epochs:
+    - the stride-32 level never fires; its logits reached -4e7 and its distances -1091..5854 (real detections: logits
+      < 3.5, distances 0.1-8.5 grid units). Through the Concats this rounded every real box distance to 0 on the board
+      (mAP50 0.000).
+    - the class features reached 212-308 at background positions while detections use at most ~8. At a step of ~1.2
+      the SiLU's small negative outputs all became 0; with negative weights on them in the final conv, every bird's
+      logit fell by ~2.3 (score 0.96 -> 0.70; board recall at conf 0.5 0.92 -> 0.58).
+    Clipping in the graph keeps the ONNX reference, the simulator and the board on the same function. Scores below
+    sigmoid(-logit_lim) are below any threshold we use; `check_clips_unchanged` verifies the rest on real images."""
+    _, logit_cat, dist_cat = head_concats(model, scores, dist)
+    if cls_feat_hi > 0:
+        lo_name, hi_name = "cls_feat_clip_lo", "cls_feat_clip_hi"
+        model.graph.initializer.extend([
+            onnx.numpy_helper.from_array(np.array(-1.0, np.float32), lo_name),  # SiLU >= -0.28: no lower clipping
+            onnx.numpy_helper.from_array(np.array(cls_feat_hi, np.float32), hi_name),
+        ])
+        for conv in class_conv_inputs(model, scores, dist):
+            out = f"{conv.input[0]}_clip"
+            idx = list(model.graph.node).index(conv)
+            model.graph.node.insert(idx, onnx.helper.make_node("Clip", [conv.input[0], lo_name, hi_name], [out], name=out))
+            conv.input[0] = out
+    # distances keep down to -1: detections can sit marginally outside their box (seen: -0.005 grid units)
+    for cat, lo, hi in ((logit_cat, -logit_lim, logit_lim), (dist_cat, -1.0, dist_hi)):
+        if hi <= 0:
+            continue
+        if cat.op_type != "Concat":
+            raise SystemExit(f"expected a Concat of per-level tensors, found {cat.op_type} ({cat.name})")
+        lo_name, hi_name = cat.name + "_clip_lo", cat.name + "_clip_hi"
+        model.graph.initializer.extend([
+            onnx.numpy_helper.from_array(np.array(lo, np.float32), lo_name),
+            onnx.numpy_helper.from_array(np.array(hi, np.float32), hi_name),
+        ])
+        idx = list(model.graph.node).index(cat)
+        for i, name in enumerate(list(cat.input)):
+            out = f"{name}_clip"
+            model.graph.node.insert(idx, onnx.helper.make_node("Clip", [name, lo_name, hi_name], [out], name=out))
+            idx += 1
+            cat.input[i] = out
+    onnx.checker.check_model(model)
+
+
+DET_SCORE = 0.05  # anchors whose best class scores above this count as detections when measuring feature ranges
+OUTLIER_RATIO = 4.0  # clip the class features only when the background reaches this many times the detections' max
+FEAT_MARGIN = 2.0  # the bound is this many times the largest class feature seen at a detection
+
+
+def sample_images(data_root, n):
+    """n evenly spaced training images (not validation, which the evaluation uses)."""
+    files = sorted(p for p in (Path(data_root) / "train" / "images").iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png"))
+    if not files:
+        raise SystemExit(f"no images in {Path(data_root) / 'train' / 'images'}")
+    return files[:: max(1, len(files) // n)][:n]
+
+
+def run_images(model, outputs, images, hw, order):
+    """Yield the requested tensors of `model` (an in-memory ModelProto; intermediate tensors allowed) for each image,
+    letterboxed exactly as the evaluation and the board do."""
+    import onnxruntime as ort
+
+    import preproc
+
+    m = onnx.ModelProto()
+    m.CopyFrom(model)
+    have = {o.name for o in m.graph.output}
+    m.graph.output.extend([onnx.helper.make_tensor_value_info(t, onnx.TensorProto.FLOAT, None) for t in outputs if t not in have])
+    sess = ort.InferenceSession(m.SerializeToString(), providers=["CPUExecutionProvider"])
+    name = sess.get_inputs()[0].name
+    for f in images:
+        canvas, *_ = preproc.letterbox(preproc.read_image(f, order), hw[1], hw[0])
+        yield sess.run(outputs, {name: (canvas[None].transpose(0, 3, 1, 2) / 255).astype(np.float32)})
+
+
+def measure_class_features(model, scores, dist, images, hw, order):
+    """Largest class feature (input of the final class convs) at detection anchors and anywhere, over `images`."""
+    """Per level: largest class feature (input of the final class conv) at detection anchors and anywhere, over `images`,
+    and the number of detection anchors."""
+    feats = [conv.input[0] for conv in class_conv_inputs(model, scores, dist)]
+    det_max, all_max, n_det = [0.0] * len(feats), [0.0] * len(feats), [0] * len(feats)
+    for out in run_images(model, [scores] + feats, images, hw, order):
+        best = out[0][0].max(0)  # best class score per anchor, all levels concatenated
+        start = 0
+        for lv, f in enumerate(out[1:]):
+            f = f[0].reshape(f.shape[1], -1)  # (channels, anchors of this level)
+            det = best[start : start + f.shape[1]] > DET_SCORE
+            start += f.shape[1]
+            all_max[lv] = max(all_max[lv], float(f.max()))
+            if det.any():
+                det_max[lv] = max(det_max[lv], float(f[:, det].max()))
+                n_det[lv] += int(det.sum())
+    return det_max, all_max, n_det
+
+
+def check_clips_unchanged(raw, clipped, scores, dist, images, hw, order, tol=1e-3):
+    """The clips must not change what the model detects: compare the scores of every anchor/class above 0.001 and the
+    distances of the detection anchors, raw vs clipped graph. Returns the largest differences."""
+    worst_s = worst_d = 0.0
+    for (s0, d0), (s1, d1) in zip(run_images(raw, [scores, dist], images, hw, order), run_images(clipped, [scores, dist], images, hw, order)):
+        keep = s0[0] > 0.001
+        if keep.any():
+            worst_s = max(worst_s, float(np.abs(s1[0] - s0[0])[keep].max()))
+        det = s0[0].max(0) > DET_SCORE
+        if det.any():
+            worst_d = max(worst_d, float(np.abs(d1[0][:, det] - d0[0][:, det]).max()))
+    if worst_s > tol or worst_d > tol:
+        raise SystemExit(
+            f"the head clips change detections on training images (max score change {worst_s:.4g}, max distance change "
+            f"{worst_d:.4g}). Pass larger bounds (--clip-cls-feat, --clip-dist, --clip-logit) or 0 to disable one."
+        )
+    return worst_s, worst_d
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("weights")
@@ -140,7 +283,28 @@ def main():
         action="store_true",
         help="export Ultralytics' own attention arrangement (scale applied to q) instead of scale after the matmul",
     )
+    ap.add_argument(
+        "--clip-dist",
+        type=float,
+        default=16.0,
+        help="clip each level's ltrb distances to [-1, this] grid units before they are concatenated, so a level that "
+        "never fires cannot blow up the INT8 range (real detections stay below ~9; 0 disables)",
+    )
+    ap.add_argument(
+        "--clip-logit", type=float, default=8.0, help="clip each level's class logits to [-this, this] (0 disables)"
+    )
+    ap.add_argument(
+        "--clip-cls-feat",
+        default="auto",
+        help="upper bound for the class features that feed each level's final class conv: 'auto' (measure it on "
+        "--data-root training images, see README), a number, or 0 to disable",
+    )
+    ap.add_argument("--data-root", help="dataset dir with train/images, for --clip-cls-feat auto and the clip check")
+    ap.add_argument("--clip-images", type=int, default=200, help="training images to measure and check the clips on")
     args = ap.parse_args()
+    if args.clip_cls_feat == "auto" and not args.data_root:
+        ap.error("--clip-cls-feat auto needs --data-root (or pass a number, or 0)")
+    cls_feat = None if args.clip_cls_feat == "auto" else float(args.clip_cls_feat)
 
     from ultralytics import YOLO
 
@@ -166,11 +330,47 @@ def main():
             "a multiple of 16: (H/8)*(W/8) + (H/16)*(W/16) + (H/32)*(W/32). See training/README.md."
         )
     hw = [imgsz, imgsz] if isinstance(imgsz, int) else imgsz
+    dist = find_distance_tensor(path, boxes)
+
+    raw = onnx.load(str(path))
+    images = sample_images(args.data_root, args.clip_images) if args.data_root else []
+    clip_info = {}
+    if cls_feat is None:  # auto
+        det_lv, all_lv, n_lv = measure_class_features(raw, scores, dist, images, hw, args.input_order)
+        clip_info = {"images": len(images), "det_anchors_per_level": n_lv,
+                     "det_max_per_level": [round(v, 3) for v in det_lv], "all_max_per_level": [round(v, 3) for v in all_lv]}
+        for lv, (d, a, n) in enumerate(zip(det_lv, all_lv, n_lv)):
+            print(f"  class features, stride {8 << lv}: max {a:.4g} overall, {d:.4g} at {n} detection anchors")
+        det_max = max(det_lv)
+        if sum(n_lv) == 0:
+            raise SystemExit(f"no detections above {DET_SCORE} on {len(images)} training images; pass --clip-cls-feat")
+        if max(all_lv) > OUTLIER_RATIO * det_max:
+            cls_feat = float(np.ceil(FEAT_MARGIN * det_max))
+            why = f"background features reach more than {OUTLIER_RATIO:g}x the detections' max of {det_max:.2f}"
+        else:
+            cls_feat = 0.0
+            why = f"no background outliers to remove (detections use features up to {det_max:.2f})"
+        print(f"class-feature clip: {cls_feat:g} ({why}; {sum(n_lv)} detection anchors on {len(images)} training images)")
+    clipped = onnx.ModelProto()
+    clipped.CopyFrom(raw)
+    clip_head_levels(clipped, scores, dist, args.clip_logit, args.clip_dist, cls_feat)
+    if images:
+        ds, dd = check_clips_unchanged(raw, clipped, scores, dist, images, hw, args.input_order)
+        clip_info.update(check_max_score_change=float(f"{ds:.3g}"), check_max_dist_change=float(f"{dd:.3g}"))
+        print(f"clip check on {len(images)} training images: max score change {ds:.2g}, max distance change {dd:.2g}")
+    else:
+        print("WARNING: no --data-root, so the head clips were not checked against real images")
+    onnx.save(clipped, str(path))
+
     meta = {
         "onnx": path.name,
         "scores": scores,
         "boxes": boxes,
-        "dist": find_distance_tensor(path, boxes),  # alternative cut: raw ltrb in grid units, see preproc.ltrb_to_boxes
+        "dist": dist,  # the default cut: raw ltrb in grid units, see preproc.ltrb_to_boxes
+        "clip_dist": args.clip_dist,
+        "clip_logit": args.clip_logit,
+        "clip_cls_feat": cls_feat,
+        "clip_info": clip_info,
         "strides": [8, 16, 32],
         "num_anchors": n_anchors,
         "nc": nc,

@@ -42,7 +42,9 @@ python training/train_xpu.py cfg=training/cfg-yolo26.yaml data_root=/path/to/bir
     epochs=120 project=runs/detect name=yolo26s_704 val=False
 ```
 
-All numbers in this README come from a 25-epoch run of this command (`epochs=25`); a longer run has not been measured.
+Most numbers in this README come from a 25-epoch run of this command (`epochs=25`); the 120-epoch run is in
+[INT8 after long training](#int8-after-long-training-the-head-clips). Ultralytics validates after the last epoch even
+with `val=False`; on this 15 GB machine that ran out of memory with `workers=8` (resume with `resume=True workers=2`).
 
 - `device=xpu`, fp16 AMP. `torch.amp.GradScaler` uses float64 internally, which the A770 does not have, so
   `xpu_compat.py` swaps in a scaler that does the same arithmetic in float32 (the loss scale is a power of two, so the
@@ -59,9 +61,13 @@ All numbers in this README come from a 25-epoch run of this command (`epochs=25`
 ## 2. Pick an input size, export to ONNX
 
 ```
-python training/export_onnx.py runs/detect/yolo26s_704/weights/best.pt --imgsz 448 768   # H W
+python training/export_onnx.py runs/detect/yolo26s_704/weights/last.pt --imgsz 448 768 --data-root /path/to/birds-3-57
 ```
 
+- `--imgsz` is H W. `--data-root` is needed for the head clips (next bullet and
+  [INT8 after long training](#int8-after-long-training-the-head-clips)); the export reads 200 training images from it.
+- Adds clips to the head so that INT8 conversion survives long training, and checks on the training images that they
+  change no detection (the export stops if they do). The bounds are in the json (`clip_*`).
 - Exports with `nms=False` (the one-to-one head). Recent Ultralytics exports the NMS head by default, so Rockchip's
   `yolo export ... format=onnx` for YOLO26 no longer gives an NMS-free graph.
 - Patches `Attention.forward` to compute `softmax((q^T k) * scale)` instead of Ultralytics' `softmax((q * scale)^T k)`.
@@ -150,6 +156,46 @@ the same process, which is why `eval_detections.py` builds instead of loading an
 
 The 720 frames are evenly spaced through the validation set (the board run needs a multiple of 24 and a copy of the
 images on the board). P and R are at each row's F1-optimal threshold.
+
+### INT8 after long training: the head clips
+
+A 120-epoch yolo26s (`runs/detect/yolo26s_704_3-57_120`) is better than the 25-epoch one in FP32 but, exported plainly,
+fell apart in INT8. INT8 gives each tensor one scale, and in the head the positions with no bird drifted to huge values
+during training, which then set that scale:
+
+1. **The stride-32 level never fires** (no detection on 200 training images in either model) and drifted furthest:
+   logits down to -4e7, box distances -1091..5854 (real detections: logits below 3.5, distances 0.1-8.5 grid units).
+   Through the Concats that join the levels, every real box distance rounded to 0: board mAP50 **0.000**.
+2. **The class features that feed each level's final class conv** reached 228-306 at background positions while
+   detections use at most 7. At an INT8 step of ~1.2, the SiLU's small negative outputs (-0.28..0) all became 0. The
+   120-epoch final conv has about 3x larger weights than the 25-epoch one, many of them negative on exactly those
+   features, so every bird's logit fell by ~2.3 (score 0.96 -> 0.70). Float weights on the INT8 features reproduce the
+   simulator's logits to 0.03, so it is the features' quantization, not the weights'. The board lost more than the
+   simulator. RKNN's per-layer `accuracy_analysis` cosines did not show it: these tensors are almost all background.
+
+`export_onnx.py` therefore clips, per level: the class features to `[-1, B]` before the final class conv, the logits to
+`[-8, 8]` and the distances to `[-1, 16]` before the Concats.
+
+- **The bound B is measured, not fixed** (`--clip-cls-feat auto`, the default). On 200 training images it finds the
+  largest class feature at detection anchors (best score > 0.05) and sets B to twice that, rounded up, but only when the
+  background reaches more than 4 times it. The 25-epoch model's birds use features up to 194, so it gets no class-feature
+  clip; a fixed bound would have broken it. The 120-epoch model gets B = 14.
+- **The export checks the clips** on the same images: every score above 0.001 and every detection's distances must stay
+  within 1e-3 of the unclipped graph, or it stops. Both models: change 0. FP32 on the full validation set is identical
+  with and without the clips.
+
+Board, all 2164 validation images (P/R at conf 0.5):
+
+| yolo26s | FP32 mAP50 / mAP50-95 | board mAP50 / mAP50-95 | board P / R |
+|---|---|---|---|
+| 25 epochs, no clips | 0.952 / 0.748 | 0.947 / 0.736 | 0.973 / 0.819 |
+| 25 epochs, clips (B: none) | 0.952 / 0.748 | 0.947 / 0.736 | 0.973 / 0.819 |
+| 120 epochs, no clips | 0.952 / 0.763 | 0.000 / 0.000 | - |
+| 120 epochs, logit + distance clips only | 0.952 / 0.763 | 0.939 / 0.735 | 0.985 / 0.584 |
+| **120 epochs, clips (B = 14)** | 0.952 / 0.763 | **0.951 / 0.754** | **0.953 / 0.916** |
+
+With the clips, the 120-epoch model loses 0.1 / 0.9 points to INT8 (the 25-epoch model 0.5 / 1.2), and its board
+precision and recall at 0.5 match FP32 (0.953 / 0.915).
 
 ## 5. Deploy
 
