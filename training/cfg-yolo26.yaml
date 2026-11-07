@@ -1,0 +1,35 @@
+# Ultralytics train args for YOLO26 on the birds dataset (Roboflow export, 7 classes).
+# Pass with: python training/train_xpu.py cfg=training/cfg-yolo26.yaml data_root=... [key=value overrides]
+#
+# Augmentation values are the ones tuned for yolo11s in the old cfg.yaml (Ultralytics `tune`, 300 iterations).
+# lr0/lrf/momentum/weight_decay/warmup/box/cls/dfl are deliberately NOT carried over: they were tuned for
+# YOLO11 + AdamW, and YOLO26 has a different loss (no DFL) and picks its own optimizer with optimizer=auto.
+model: yolo26s.pt
+pretrained: true
+epochs: 120
+imgsz: 704
+batch: 32
+workers: 8
+cache: false          # the A770 box has 15 GB RAM; the dataset is ~9650 images, read from disk is fine
+patience: 0           # no early stopping
+augment: true
+amp: true             # fp16 + XPUGradScaler (training/xpu_compat.py)
+exist_ok: true
+# deterministic=True (the Ultralytics default) forces torch.use_deterministic_algorithms, which measured ~40% slower
+# per step on the A770 (2.2 vs 1.3 s/it, yolo26s, batch 32, 704 px). Runs are then not bit-reproducible.
+deterministic: false
+
+hsv_h: 0.01486
+hsv_s: 0.52398
+hsv_v: 0.21536
+degrees: 0.0
+translate: 0.06774
+scale: 0.28851
+shear: 0.0
+perspective: 0.0
+flipud: 0.0
+fliplr: 0.43232
+bgr: 0.0
+mosaic: 0.46542
+mixup: 0.0
+copy_paste: 0.0
