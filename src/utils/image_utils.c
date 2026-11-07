@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <dirent.h>
 #include <math.h>
 #include <sys/time.h>
@@ -100,6 +101,42 @@ static int crop_and_scale_image_yuv420sp(unsigned char *src, int src_width, int 
     return 0;
 }
 
+// Bytes per pixel of the packed formats; 0 for the planar YUV ones.
+static int packed_bytes_per_pixel(image_format_t fmt)
+{
+    switch (fmt) {
+    case IMAGE_FORMAT_GRAY8: return 1;
+    case IMAGE_FORMAT_RGB888:
+    case IMAGE_FORMAT_BGR888: return 3;
+    case IMAGE_FORMAT_RGBA8888: return 4;
+    default: return 0;
+    }
+}
+
+// Set every byte of a packed image outside the box (x, y, w, h) to `color`: the letterbox padding. Only the padding is
+// written, a few rows or columns, instead of the whole canvas. Returns -1 for formats that are not packed.
+static int fill_outside_box(image_buffer_t *img, int x, int y, int w, int h, char color)
+{
+    const int bpp = packed_bytes_per_pixel(img->format);
+    if (bpp == 0 || img->virt_addr == NULL)
+        return -1;
+    const size_t row = (size_t)img->width * bpp;
+    unsigned char *base = img->virt_addr;
+    if (y > 0)
+        memset(base, color, (size_t)y * row);                                            // above the box
+    if (y + h < img->height)
+        memset(base + (size_t)(y + h) * row, color, (size_t)(img->height - y - h) * row); // below
+    if (x > 0 || x + w < img->width)
+        for (int r = y; r < y + h; ++r) {
+            unsigned char *line = base + (size_t)r * row;
+            if (x > 0)
+                memset(line, color, (size_t)x * bpp);                                    // left
+            if (x + w < img->width)
+                memset(line + (size_t)(x + w) * bpp, color, (size_t)(img->width - x - w) * bpp); // right
+        }
+    return 0;
+}
+
 static int convert_image_cpu(image_buffer_t *src, image_buffer_t *dst, image_rect_t *src_box, image_rect_t *dst_box, char color, int verbose) {
     int ret;
     if (dst->virt_addr == NULL) {
@@ -108,7 +145,10 @@ static int convert_image_cpu(image_buffer_t *src, image_buffer_t *dst, image_rec
     if (src->virt_addr == NULL) {
         return -1;
     }
-    if (src->format != dst->format) {
+    // Same format in and out, or a BGR888 <-> RGB888 swap (done after the 3-channel resize, below).
+    const int swap_rb = (src->format == IMAGE_FORMAT_BGR888 && dst->format == IMAGE_FORMAT_RGB888) ||
+                        (src->format == IMAGE_FORMAT_RGB888 && dst->format == IMAGE_FORMAT_BGR888);
+    if (src->format != dst->format && !swap_rb) {
         return -1;
     }
 
@@ -133,15 +173,15 @@ static int convert_image_cpu(image_buffer_t *src, image_buffer_t *dst, image_rec
         dst_box_h = dst_box->bottom - dst_box->top + 1;
     }
 
-    // fill pad color
+    // fill pad color: only the padding for packed formats, the whole image for YUV
     if (dst_box_w != dst->width || dst_box_h != dst->height) {
-        int dst_size = get_image_size(dst);
-        memset(dst->virt_addr, color, dst_size);
+        if (fill_outside_box(dst, dst_box_x, dst_box_y, dst_box_w, dst_box_h, color) != 0)
+            memset(dst->virt_addr, color, get_image_size(dst));
     }
 
     int need_release_dst_buffer = 0;
     int reti = 0;
-    if (src->format == IMAGE_FORMAT_RGB888) {
+    if (src->format == IMAGE_FORMAT_RGB888 || src->format == IMAGE_FORMAT_BGR888) {
         reti = crop_and_scale_image_c(3, src->virt_addr, src->width, src->height,
             src_box_x, src_box_y, src_box_w, src_box_h,
             dst->virt_addr, dst->width, dst->height,
@@ -168,6 +208,16 @@ static int convert_image_cpu(image_buffer_t *src, image_buffer_t *dst, image_rec
         printf("convert_image_cpu fail %d\n", reti);
         return -1;
     }
+    if (swap_rb) {
+        for (int y = dst_box_y; y < dst_box_y + dst_box_h; ++y) {
+            unsigned char *px = dst->virt_addr + ((size_t)y * dst->width + dst_box_x) * 3;
+            for (int x = 0; x < dst_box_w; ++x, px += 3) {
+                unsigned char t = px[0];
+                px[0] = px[2];
+                px[2] = t;
+            }
+        }
+    }
     return 0;
 }
 
@@ -176,6 +226,8 @@ static int get_rga_fmt(image_format_t fmt) {
     {
     case IMAGE_FORMAT_RGB888:
         return RK_FORMAT_RGB_888;
+    case IMAGE_FORMAT_BGR888:
+        return RK_FORMAT_BGR_888;
     case IMAGE_FORMAT_RGBA8888:
         return RK_FORMAT_RGBA_8888;
     case IMAGE_FORMAT_YUV420SP_NV12:
@@ -197,6 +249,7 @@ int get_image_size(image_buffer_t* image)
     case IMAGE_FORMAT_GRAY8:
         return image->width * image->height;
     case IMAGE_FORMAT_RGB888:
+    case IMAGE_FORMAT_BGR888:
         return image->width * image->height * 3;    
     case IMAGE_FORMAT_RGBA8888:
         return image->width * image->height * 4;
@@ -206,6 +259,43 @@ int get_image_size(image_buffer_t* image)
     default:
         break;
     }
+}
+
+// CPU fallbacks of convert_image / convert_image_rga. Each reason is reported on stderr on its 1st, 10th, 100th, ...
+// occurrence with a running count, so a slow path is never silent but a fallback on every frame does not flood the log.
+enum {
+    CPU_FALLBACK_UNALIGNED,  // a width is not a multiple of 16, so RGA is not tried
+    CPU_FALLBACK_RGA_FAILED, // RGA returned an error; the frame was resized on the CPU
+    CPU_FALLBACK_FILL,       // imfill failed for a YUV destination; the whole image was cleared with memset
+    CPU_FALLBACK_REASONS
+};
+
+static void warn_cpu_fallback(int reason, const image_buffer_t *src, const image_buffer_t *dst)
+{
+    static unsigned long count[CPU_FALLBACK_REASONS];
+    static unsigned long next_report[CPU_FALLBACK_REASONS] = {1, 1, 1};
+    const unsigned long n = ++count[reason]; // not atomic: under concurrent calls a report may be skipped or repeated
+    if (n < next_report[reason])
+        return;
+    next_report[reason] = n * 10;
+    switch (reason) {
+    case CPU_FALLBACK_UNALIGNED:
+        fprintf(stderr, "WARNING: image conversion is running on the CPU instead of RGA: RGA is only used when the source "
+                        "and destination widths are multiples of 16, and they are %d and %d (occurrence %lu)\n",
+                src->width, dst->width, n);
+        break;
+    case CPU_FALLBACK_RGA_FAILED:
+        fprintf(stderr, "WARNING: RGA failed to convert a %dx%d frame to %dx%d (see the RGA error above); falling back "
+                        "to the CPU (occurrence %lu)\n",
+                src->width, src->height, dst->width, dst->height, n);
+        break;
+    case CPU_FALLBACK_FILL:
+        fprintf(stderr, "WARNING: RGA could not fill the letterbox padding (imfill) of a %dx%d image; cleared on the CPU "
+                        "with memset instead, or left unfilled if the CPU cannot reach the buffer (occurrence %lu)\n",
+                dst->width, dst->height, n);
+        break;
+    }
+    fflush(stderr);
 }
 
 static int convert_image_rga(image_buffer_t* src_img, image_buffer_t* dst_img, image_rect_t* src_box, image_rect_t* dst_box, char color, int verbose)
@@ -335,7 +425,14 @@ static int convert_image_rga(image_buffer_t* src_img, image_buffer_t* dst_img, i
         }
     }
 
-    if (drect.width != dstWidth || drect.height != dstHeight) {
+    // Letterbox padding. RGA's imfill only runs on the RGA2 core, which on the RK3588 cannot reach memory above 4 GiB, so
+    // on boards with more RAM it fails for ordinary malloc'd buffers ("rga_policy: invalid function policy" in dmesg)
+    // while the resize, on the RGA3 cores, works. When the CPU can write the destination and the format is packed, the
+    // padding is filled on the CPU after the resize instead: only the padding bytes, a few kB, so cheaper than any fill
+    // of the whole canvas. imfill is kept for destinations the CPU cannot reach (fd only) and for YUV.
+    const int need_pad = drect.width != dstWidth || drect.height != dstHeight;
+    const int cpu_pad = need_pad && dst != NULL && packed_bytes_per_pixel(dst_img->format) > 0;
+    if (need_pad && !cpu_pad) {
         im_rect dst_whole_rect = {0, 0, dstWidth, dstHeight};
         int imcolor;
         char* p_imcolor = (char*)&imcolor;
@@ -347,6 +444,7 @@ static int convert_image_rga(image_buffer_t* src_img, image_buffer_t* dst_img, i
             dst_whole_rect.x, dst_whole_rect.y, dst_whole_rect.width, dst_whole_rect.height, imcolor);
         ret_rga = imfill(rga_buf_dst, dst_whole_rect, imcolor);
         if (ret_rga <= 0) {
+            warn_cpu_fallback(CPU_FALLBACK_FILL, src_img, dst_img);
             if (dst != NULL) {
                 size_t dst_size = get_image_size(dst_img);
                 memset(dst, color, dst_size);
@@ -362,6 +460,8 @@ static int convert_image_rga(image_buffer_t* src_img, image_buffer_t* dst_img, i
         printf("Error on improcess STATUS=%d\n", ret_rga);
         printf("RGA error message: %s\n", imStrError((IM_STATUS)ret_rga));
         ret = -1;
+    } else if (cpu_pad) {
+        fill_outside_box(dst_img, drect.x, drect.y, drect.width, drect.height, color);
     }
 
 err:
@@ -387,10 +487,12 @@ int convert_image(image_buffer_t* src_img, image_buffer_t* dst_img, image_rect_t
     if(src_img->width % 16 == 0 && dst_img->width % 16 == 0) {
         ret = convert_image_rga(src_img, dst_img, src_box, dst_box, color, verbose);
         if (ret != 0) {
+            warn_cpu_fallback(CPU_FALLBACK_RGA_FAILED, src_img, dst_img);
             if (verbose) printf("try convert image use cpu\n");
             ret = convert_image_cpu(src_img, dst_img, src_box, dst_box, color, verbose);
         }
     } else {
+        warn_cpu_fallback(CPU_FALLBACK_UNALIGNED, src_img, dst_img);
         if (verbose) printf("src width is not 4/16-aligned, convert image use cpu\n");
         ret = convert_image_cpu(src_img, dst_img, src_box, dst_box, color, verbose);
     }
