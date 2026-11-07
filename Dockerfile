@@ -2,8 +2,11 @@ FROM python:3.10-slim AS builder
 
 RUN apt-get update && apt-get install pkg-config libdrm-dev meson ninja-build git cmake g++ curl -y && apt-get clean -y && rm -rf /var/lib/apt/lists/*
 
-# get rknn driver
-RUN curl https://raw.githubusercontent.com/airockchip/rknn-toolkit2/refs/heads/master/rknpu2/runtime/Linux/librknn_api/aarch64/librknnrt.so -o /usr/lib/librknnrt.so && mkdir /usr/lib64 && ln -s /usr/lib/librknnrt.so /usr/lib64/librknnrt.so
+# get rknn runtime. Pinned instead of 'master', which changes under you between builds; keep it equal to the
+# rknn-toolkit2 version that converted the .rknn models (training/README.md), as Rockchip recommends. -f makes a bad
+# URL fail the build instead of saving an HTML error page as the .so.
+ARG RKNN_RUNTIME_VERSION=2.5.0
+RUN curl -fL https://raw.githubusercontent.com/airockchip/rknn-toolkit2/v${RKNN_RUNTIME_VERSION}/rknpu2/runtime/Linux/librknn_api/aarch64/librknnrt.so -o /usr/lib/librknnrt.so && mkdir /usr/lib64 && ln -s /usr/lib/librknnrt.so /usr/lib64/librknnrt.so
 
 # build ffmpeg with acceleration
 ## Media Processing Platform (MPP) for Rockchip
