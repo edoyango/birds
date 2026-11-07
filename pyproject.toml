@@ -2,10 +2,10 @@
 name = "birdector"
 version = "0.3.0"
 dependencies = [
-    "torch",
-    "torchvision",
-    "rknn-toolkit2==2.3.0",
+    "numpy",
+    "opencv-python-headless<5",
     "pandas",
+    "pillow",
     "flask",
     "prometheus_client",
     "toml"
