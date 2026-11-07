@@ -5,7 +5,7 @@ from ..config import load_config
 
 _RKNN_MAX_DIMS = 16      # src/3rdparty/include/rknpu2/rknn_api.h
 _RKNN_MAX_NAME_LEN = 256 # src/3rdparty/include/rknpu2/rknn_api.h
-_OBJ_NUMB_MAX_SIZE = 128 # src/yolov5/yolov5.h
+_OBJ_NUMB_MAX_SIZE = 128 # OBJ_NUMB_MAX_SIZE in src/yolo26/model.h
 
 _classes_dict = load_config()
 

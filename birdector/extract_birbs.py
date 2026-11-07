@@ -19,17 +19,8 @@ from prometheus_client import (
     CONTENT_TYPE_LATEST,
 )
 
-OBJ_THRESH = 0.5
-NMS_THRESH = 0.5
-
-# The follew two param is for map test
-# OBJ_THRESH = 0.001
-# NMS_THRESH = 0.65
-
-IMG_SIZE = (800, 800)  # (width, height), such as (1280, 736)
-
-from .rknn_yolov5 import CLASS_NAMES, object_detect_result
-from . import rknn_yolov5
+from .detector import CLASS_NAMES, object_detect_result
+from . import detector
 
 # add 1 to nice value so ffmpeg doesn't get in the way of the main processes
 FFMPEG_CMD = "nice -n 1 ffmpeg -y -hide_banner -loglevel error -i {input_video} -init_hw_device rkmpp=hw -filter_hw_device hw -vf hwupload,scale_rkrga=w=864:h=486 -c:v hevc_rkmpp -qp_init 20 {output_video}"
@@ -311,7 +302,6 @@ class detected_bird_video:
 
 def inference_worker(
     model_path: Path,
-    anchors_path: Path,
     batch_size: int,
     video: str,
     metrics_port: int,
@@ -323,16 +313,14 @@ def inference_worker(
     h: int,
     video_name_prefix: str,
     npu_cores: list,
-    arch: str = "yolov5",
     conf: float = 0.25,
 ):
     """
-    Performs batched inference on video frames using an RKNN YOLOv5 model, writes results to video files,
+    Performs batched inference on video frames using an RKNN YOLO26 model, writes results to video files,
     and exports detection metrics via a Prometheus-compatible Flask server.
 
     Args:
         model_path (Path): Path to the compiled RKNN model.
-        anchors_path (Path): Path to the file containing anchor box definitions.
         batch_size (int): Number of frames to process in each inference batch.
         video (str): Identifier for the input video source (used for metrics labeling).
         metrics_port (int): Port to expose Prometheus metrics via a Flask app.
@@ -344,15 +332,14 @@ def inference_worker(
         h (int): Height of the video frames.
         video_name_prefix (str): Prefix to prepend to all output video filenames.
         npu_cores (list): List of NPU core indices to use during inference.
-        arch (str): Model architecture: "yolov5" (YOLOv5/YOLOv7, needs anchors) or "yolo26" (NMS-free, no anchors).
-        conf (float): Score threshold for arch="yolo26". The YOLOv5/YOLOv7 threshold is compiled in.
+        conf (float): Score threshold for detections.
 
     Returns:
         None
 
     Notes:
         - Starts a child process to serve Prometheus metrics for detection statistics.
-        - Loads anchors and initializes the RKNN model for inference.
+        - Initializes the RKNN model for inference.
         - Batches incoming frames from `frame_queue` and runs detection inference when a full batch is collected.
         - For each frame, draws detections and writes annotated frames to a video file if birds are detected.
         - Automatically handles cleanup of video writers and Prometheus exporter process on completion.
@@ -371,18 +358,7 @@ def inference_worker(
     )
     prom_exporter_worker.start()
 
-    # load anchors (anchor-based YOLOv5/YOLOv7 only)
-    anchors = None
-    if arch == "yolov5":
-        with open(anchors_path, "r") as f:
-            values = [float(_v) for _v in f.readlines()]
-            anchors = np.array(values).reshape(-1, 6)
-        print(
-            "use anchors from '{}', which is {}".format(anchors_path, anchors),
-            file=sys.stderr,
-        )
-
-    model = rknn_yolov5.model(model_path, anchors, npu_cores=npu_cores, arch=arch)
+    model = detector.model(model_path, npu_cores=npu_cores)
 
     # begin reading
     iframe = 0
@@ -600,7 +576,7 @@ def main():
         "--model_path",
         type=str,
         required=True,
-        help="model path, could be .pt or .rknn file",
+        help="YOLO26 .rknn model built by training/convert_rknn.py",
     )
 
     # data params
@@ -612,24 +588,11 @@ def main():
         help="Video to watch. Can be either video device index, e.g. 0, or video file e.g. video.mkv.",
     )
     parser.add_argument(
-        "--anchors",
-        type=str,
-        default="../model/anchors_yolov5.txt",
-        help="target to anchor file, only yolov5, yolov7 need this param",
-    )
-    parser.add_argument(
-        "--arch",
-        choices=rknn_yolov5.ARCHITECTURES,
-        default="yolov5",
-        help="model architecture: 'yolov5' (YOLOv5 and YOLOv7, uses --anchors, NMS on CPU) or 'yolo26' (NMS-free "
-        "model from training/convert_rknn.py, no anchors).",
-    )
-    parser.add_argument(
         "--conf",
         type=float,
         default=0.25,
-        help="score threshold for --arch yolo26 (YOLOv5/YOLOv7 use a compiled-in threshold). The F1-optimal value for "
-        "the INT8 model on the bird validation set was about 0.2; raise it for fewer false positives.",
+        help="score threshold for detections. The F1-optimal value for the INT8 model on the bird validation set was "
+        "about 0.2; raise it for fewer false positives.",
     )
 
     # output
@@ -718,7 +681,6 @@ Beginning processing...
         target=inference_worker,
         args=(
             args.model_path,
-            args.anchors,
             args.batch_size,
             args.video,
             args.metrics_port,
@@ -730,7 +692,6 @@ Beginning processing...
             h,
             args.video_name_prefix,
             npu_cores,
-            args.arch,
             args.conf,
         ),
     )
