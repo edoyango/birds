@@ -9,7 +9,7 @@ batch_size="${6:-1}"
 conf="${BIRDS_CONF:-0.25}"
 
 extract-birbs \
-    --model_path /app/models/yolov5-birbs.rknn \
+    --model_path /app/models/birbs.rknn \
     --video "$video" \
     --output-dir /output/$(date +%Y-%m-%d) \
     --max-frames $max_frames \
