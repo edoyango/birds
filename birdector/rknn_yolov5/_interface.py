@@ -18,6 +18,7 @@ class _image_format_t(_ctypes.c_int):
     IMAGE_FORMAT_RGBA8888 = 2
     IMAGE_FORMAT_YUV420SP_NV21 = 3
     IMAGE_FORMAT_YUV420SP_NV12 = 4
+    IMAGE_FORMAT_BGR888 = 5
 
 class _image_buffer_t(_ctypes.Structure):
     _fields_ = [

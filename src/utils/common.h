@@ -11,6 +11,7 @@ typedef enum {
     IMAGE_FORMAT_RGBA8888,
     IMAGE_FORMAT_YUV420SP_NV21,
     IMAGE_FORMAT_YUV420SP_NV12,
+    IMAGE_FORMAT_BGR888, // OpenCV's channel order; appended so the values above (and the Python binding's) keep their numbers
 } image_format_t;
 
 /**
