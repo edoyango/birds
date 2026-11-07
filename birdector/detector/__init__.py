@@ -46,7 +46,7 @@ class model():
         ret = _lib.release_model(self._model_ctx)
         assert ret==0, f"Failed to release RKNN model at {self.model_path}"
 
-    def inference(self, img: np.ndarray, verbose: bool = False, conf: float = 0.25) -> object_detect_result:
+    def inference(self, img: np.ndarray, verbose: bool = False, conf: float = 0.5) -> object_detect_result:
         """Run detection on one frame (HxWx3) or a batch (BxHxWx3) of uint8 pixels as OpenCV reads them (BGR).
 
         Detections scoring above conf are returned.
