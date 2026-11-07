@@ -6,7 +6,7 @@ prefix="${3:-}"
 prom_port="${4:-9093}"
 npu_cores="${5:-'-1'}"
 batch_size="${6:-1}"
-conf="${BIRDS_CONF:-0.25}"
+conf="${BIRDS_CONF:-0.5}"
 
 extract-birbs \
     --model_path /app/models/birbs.rknn \

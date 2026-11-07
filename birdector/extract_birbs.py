@@ -313,7 +313,7 @@ def inference_worker(
     h: int,
     video_name_prefix: str,
     npu_cores: list,
-    conf: float = 0.25,
+    conf: float = 0.5,
 ):
     """
     Performs batched inference on video frames using an RKNN YOLO26 model, writes results to video files,
@@ -590,9 +590,9 @@ def main():
     parser.add_argument(
         "--conf",
         type=float,
-        default=0.25,
-        help="score threshold for detections. The F1-optimal value for the INT8 model on the bird validation set was "
-        "about 0.2; raise it for fewer false positives.",
+        default=0.5,
+        help="score threshold for detections. For the INT8 model in models/ on the bird validation set, F1 is flat from "
+        "0.4 to 0.6 (0.934 at 0.5); lower it to find a few more birds at the cost of more false positives.",
     )
 
     # output
