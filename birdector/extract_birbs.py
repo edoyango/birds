@@ -323,6 +323,8 @@ def inference_worker(
     h: int,
     video_name_prefix: str,
     npu_cores: list,
+    arch: str = "yolov5",
+    conf: float = 0.25,
 ):
     """
     Performs batched inference on video frames using an RKNN YOLOv5 model, writes results to video files,
@@ -342,6 +344,8 @@ def inference_worker(
         h (int): Height of the video frames.
         video_name_prefix (str): Prefix to prepend to all output video filenames.
         npu_cores (list): List of NPU core indices to use during inference.
+        arch (str): Model architecture: "yolov5" (YOLOv5/YOLOv7, needs anchors) or "yolo26" (NMS-free, no anchors).
+        conf (float): Score threshold for arch="yolo26". The YOLOv5/YOLOv7 threshold is compiled in.
 
     Returns:
         None
@@ -367,16 +371,18 @@ def inference_worker(
     )
     prom_exporter_worker.start()
 
-    # load anchors
-    with open(anchors_path, "r") as f:
-        values = [float(_v) for _v in f.readlines()]
-        anchors = np.array(values).reshape(-1, 6)
-    print(
-        "use anchors from '{}', which is {}".format(anchors_path, anchors),
-        file=sys.stderr,
-    )
+    # load anchors (anchor-based YOLOv5/YOLOv7 only)
+    anchors = None
+    if arch == "yolov5":
+        with open(anchors_path, "r") as f:
+            values = [float(_v) for _v in f.readlines()]
+            anchors = np.array(values).reshape(-1, 6)
+        print(
+            "use anchors from '{}', which is {}".format(anchors_path, anchors),
+            file=sys.stderr,
+        )
 
-    model = rknn_yolov5.model(model_path, anchors, npu_cores=npu_cores)
+    model = rknn_yolov5.model(model_path, anchors, npu_cores=npu_cores, arch=arch)
 
     # begin reading
     iframe = 0
@@ -414,7 +420,7 @@ def inference_worker(
 
         if frames_loaded == 0 and n_valid > 0:
             # inference
-            inf_res = model.inference(frames)
+            inf_res = model.inference(frames, conf=conf)
             shared_dict.update(count_detections(inf_res[n_valid - 1]))
 
             for i, resi in enumerate(inf_res[:n_valid]):
@@ -611,6 +617,20 @@ def main():
         default="../model/anchors_yolov5.txt",
         help="target to anchor file, only yolov5, yolov7 need this param",
     )
+    parser.add_argument(
+        "--arch",
+        choices=rknn_yolov5.ARCHITECTURES,
+        default="yolov5",
+        help="model architecture: 'yolov5' (YOLOv5 and YOLOv7, uses --anchors, NMS on CPU) or 'yolo26' (NMS-free "
+        "model from training/convert_rknn.py, no anchors).",
+    )
+    parser.add_argument(
+        "--conf",
+        type=float,
+        default=0.25,
+        help="score threshold for --arch yolo26 (YOLOv5/YOLOv7 use a compiled-in threshold). The F1-optimal value for "
+        "the INT8 model on the bird validation set was about 0.2; raise it for fewer false positives.",
+    )
 
     # output
     parser.add_argument(
@@ -709,7 +729,9 @@ Beginning processing...
             w,
             h,
             args.video_name_prefix,
-            npu_cores
+            npu_cores,
+            args.arch,
+            args.conf,
         ),
     )
     worker.start()
