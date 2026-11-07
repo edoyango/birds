@@ -85,6 +85,13 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - ./models/yolov7-birbs-bs24.rknn:/app/models/yolov5-birbs.rknn
       - ./models/yolov7-anchors.txt:/app/models/anchors.txt
+      # To run a YOLO26 model (training/README.md) instead, mount it over the same path, drop the anchors mount
+      # (not used) and set the architecture. The batch size (last command argument) must match the model's:
+      #   - ./models/yolo26s-birbs-bs24.rknn:/app/models/yolov5-birbs.rknn
+      # and under this service:
+      #   environment:
+      #     - BIRDS_ARCH=yolo26
+      #     - BIRDS_CONF=0.25
     restart: unless-stopped
     devices:
       - /dev/video0
