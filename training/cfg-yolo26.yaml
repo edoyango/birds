@@ -9,7 +9,7 @@ pretrained: true
 epochs: 120
 imgsz: 704
 batch: 32
-workers: 8
+workers: 6           # train_xpu.py gives validation the same number (val_workers); 8 ran out of memory on 15 GB
 cache: false          # the A770 box has 15 GB RAM; the dataset is ~9650 images, read from disk is fine
 patience: 0           # no early stopping
 augment: true

@@ -42,11 +42,29 @@ fused_bn     Ultralytics Conv's BatchNorm + SiLU in training mode as Triton kern
 half_glue    fp16 where autocast needlessly promoted: the input image (uint8 -> fp16 channels_last in one kernel) and
              nearest upsampling (+ the Concat after it). Forward bit-identical.
 fast_topk    TaskAlignedAssigner's topk (3-15 ms per call on XPU) as k argmax passes; same set except among ties.
+fast_val     Validation NMS + metrics on the host. The stock per-image loop makes ~12k tiny device->host copies per
+             validation pass (each a queue drain), and per-image XPU NMS costs ~1.7 ms vs ~0.2 ms on the CPU for the
+             ~20 candidate boxes a trained model leaves at conf=0.001. Now: one copy of the raw predictions per
+             batch, Ultralytics' own NMS and metric code on host tensors (images with > NMS_HOST_MAX boxes, e.g.
+             early in training, go back to the XPU kernel). Identical NMS output and metrics; 15.2 -> 6.6 s per
+             validation of the 2164-image val set.
+fast_cast    All conv weights cast to fp16 in one multi-tensor kernel per forward (and their fp16 grads back to
+             fp32 in one), instead of autocast's ~140 + ~140 per-weight cast kernels. Bit-identical casts.
+fast_cat     C2f/C3k2, C3, SPPF, C2PSA and Concat: the split after cv1 is written by the fused BN kernel as two
+             contiguous tensors (no channel-slice views, which the next conv had to copy), and concatenations go
+             through xpu_cat.py (Triton, 2-4x faster than torch.cat on NHWC, and its backward hands each input a
+             contiguous gradient instead of a slice that consumers copy or add with a slow strided kernel). Same
+             values; gradients move by ~1e-3 relative (different kernels sum in a different order), 200x below the
+             fp16-vs-fp32 difference, which is unchanged (0.2094 vs 0.2095).
+fast_attn    Attention (C2PSA / PSABlock) as out^T = attn @ v^T with an fp16 softmax and a channels_last output:
+             no transposed copy of the (B, heads, N, N) gradient in softmax's backward, no fp32 copy of the scores.
+             Forward bit-identical; 8.2 -> 4.7 ms per attention block (fwd + bwd).
 
 Call set_launch_env() before any XPU work, then install(...) before the trainer is built. Written against
 Ultralytics 8.4.204 / torch 2.15; the patched functions fall back to the originals for shapes they do not cover.
 """
 import os
+import weakref
 
 import torch
 
@@ -55,7 +73,8 @@ DEEP_QUEUE_ENV = {"UR_L0_COMMANDLISTS_CLEANUP_THRESHOLD": "-1"}  # see launch_en
 
 _orig = {}
 _flags = {"channels_last": False, "sync_free_loss": False, "fast_nms": False, "fast_musgd": False, "fused_bn": False,
-          "half_glue": False, "fast_topk": False}
+          "half_glue": False, "fast_topk": False, "fast_val": False, "fast_cast": False,
+          "fast_cat": False, "fast_attn": False}
 
 
 def set_launch_env(deep_queue=True):
@@ -327,12 +346,55 @@ def _bbox_loss_forward(
 # ---------------------------------------------------------------- validation NMS
 
 
+NMS_HOST_MAX = 2000  # boxes per image above which host NMS hands the boxes to the XPU kernel (see fast_val)
+
+
 def _nms_boxes(boxes, scores, iou, rotated=False):
     if _flags["fast_nms"] and not rotated and boxes.device.type == "xpu":
         import torchvision
 
         return torchvision.ops.nms(boxes, scores, iou)
+    if (_flags["fast_val"] and not rotated and boxes.device.type == "cpu" and boxes.shape[0] > NMS_HOST_MAX
+            and torch.xpu.is_initialized()):
+        import torchvision
+
+        return torchvision.ops.nms(boxes.to("xpu"), scores.to("xpu"), iou).cpu()
     return _orig["nms_boxes"](boxes, scores, iou, rotated)
+
+
+# ---------------------------------------------------------------- validation: NMS + metrics on the host
+
+
+def _val_preprocess(self, batch):
+    """DetectionValidator.preprocess; with fast_val, keeps the loader's host copies of the targets for
+    update_metrics (they are moved to the GPU for the validation loss as before)."""
+    if _flags["fast_val"] and self.device.type == "xpu" and not self.args.tile:
+        self._xpu_host_targets = {k: batch[k] for k in ("batch_idx", "cls", "bboxes")
+                                  if torch.is_tensor(batch.get(k)) and batch[k].device.type == "cpu"}
+    return _orig["val_preprocess"](self, batch)
+
+
+def _val_postprocess(self, preds):
+    """DetectionValidator.postprocess (NMS) on a host copy of the raw predictions (one device->host copy per batch)."""
+    if _flags["fast_val"] and self.device.type == "xpu" and not self.args.tile:
+        p = preds[0] if isinstance(preds, (list, tuple)) else preds
+        if torch.is_tensor(p) and p.device.type == "xpu":
+            preds = p.cpu()
+    return _orig["val_postprocess"](self, preds)
+
+
+def _val_update_metrics(self, preds, batch):
+    """DetectionValidator.update_metrics on host tensors: the stock per-image loop then makes no device syncs."""
+    host = self.__dict__.pop("_xpu_host_targets", None)
+    if (host is not None and len(host) == 3 and self.device.type == "xpu"
+            and all(torch.is_tensor(v) and v.device.type == "cpu" for p in preds for v in p.values())):
+        dev = self.device
+        self.device = torch.device("cpu")  # _prepare_batch builds its scale tensor on self.device
+        try:
+            return _orig["val_update_metrics"](self, preds, {**batch, **host})
+        finally:
+            self.device = dev
+    return _orig["val_update_metrics"](self, preds, batch)
 
 
 # ---------------------------------------------------------------- MuSGD: queue Newton-Schulz before the inf check
@@ -446,6 +508,180 @@ def _conv_forward(self, x):
     return self.act(self.bn(y))
 
 
+# ---------------------------------------------------------------- fp16 conv weights in one multi-tensor cast
+
+
+class _CastHalf(torch.autograd.Function):
+    """fp32 tensors -> fp16 copies in one multi-tensor kernel; backward casts the fp16 grads back the same way.
+
+    Autocast does the same casts (and ToCopyBackward their grads) one kernel per weight: ~280 tiny kernels per step.
+    Both directions are exact roundings/widenings, so results are bit-identical.
+    """
+
+    @staticmethod
+    def forward(ctx, *ws):
+        ctx.set_materialize_grads(False)
+        out = [torch.empty_like(w, dtype=torch.float16) for w in ws]
+        torch._foreach_copy_(out, list(ws))
+        return tuple(out)
+
+    @staticmethod
+    def backward(ctx, *gs):
+        idx = [i for i, g in enumerate(gs) if g is not None]
+        res = [None] * len(gs)
+        if idx:
+            src = [gs[i] for i in idx]
+            dst = [torch.empty_like(g, dtype=torch.float32) for g in src]
+            torch._foreach_copy_(dst, src)
+            for i, d in zip(idx, dst):
+                res[i] = d
+        return tuple(res)
+
+
+_cast_conv_cache = weakref.WeakKeyDictionary()  # model -> its nn.Conv2d modules (kept out of the model's pickle)
+
+
+def _cast_convs(model):
+    """Modules whose weights get pre-cast: every nn.Conv2d with fp32 params (cached per model)."""
+    convs = _cast_conv_cache.get(model)
+    if convs is None:
+        convs = [m for m in model.modules() if type(m) is torch.nn.Conv2d and m.weight.dtype == torch.float32
+                 and (m.bias is None or m.bias.dtype == torch.float32)]
+        _cast_conv_cache[model] = convs
+    return convs
+
+
+def _predict_once(self, x, *args, **kwargs):
+    """BaseModel._predict_once; with fast_cast, under fp16 autocast with grad on, first casts all conv weights (and
+    biases) to fp16 in one _CastHalf call and hands each conv its copy (autocast then has nothing to cast)."""
+    if not (_flags["fast_cast"] and self.training and torch.is_grad_enabled() and x.device.type == "xpu"
+            and torch.is_autocast_enabled("xpu") and torch.get_autocast_dtype("xpu") == torch.float16):
+        return _orig["predict_once"](self, x, *args, **kwargs)
+    convs = _cast_convs(self)
+    ws = []
+    for m in convs:
+        ws.append(m.weight)
+        if m.bias is not None:
+            ws.append(m.bias)
+    half = iter(_CastHalf.apply(*ws))
+    for m in convs:
+        m.__dict__["_xpu_half"] = (next(half), next(half) if m.bias is not None else None)
+    try:
+        return _orig["predict_once"](self, x, *args, **kwargs)
+    finally:
+        for m in convs:
+            m.__dict__.pop("_xpu_half", None)
+
+
+def _conv2d_forward(self, input):
+    """nn.Conv2d.forward, using the fp16 weights _predict_once prepared if there are any."""
+    half = self.__dict__.get("_xpu_half")
+    if half is not None:
+        return self._conv_forward(input, half[0], half[1])
+    return _orig["conv2d_forward"](self, input)
+
+
+# ---------------------------------------------------------------- channel split / concat without strided copies
+
+
+def _cat(xs):
+    if _flags["fast_cat"]:
+        import xpu_cat
+
+        return xpu_cat.cat(xs)
+    return torch.cat(list(xs), 1)
+
+
+def _conv_split2(cv, x, c):
+    """cv(x).split((c, c), 1) for an Ultralytics Conv; with fused_bn in training the BN kernel writes the two halves
+    as separate contiguous tensors (same values) instead of returning channel-slice views."""
+    from ultralytics.nn.modules import conv as CM
+
+    if _flags["fused_bn"] and type(cv) is CM.Conv and hasattr(cv, "bn"):
+        import xpu_fused_bn
+
+        y = cv.conv(x)
+        if xpu_fused_bn.supported(y, cv.bn, cv.act) and y.shape[1] == 2 * c:
+            return xpu_fused_bn.bn_act(y, cv.bn, cv.act, split=c)
+        return cv.act(cv.bn(y)).split((c, c), 1)
+    return cv(x).split((c, c), 1)
+
+
+def _fast_cat_on(x):
+    return _flags["fast_cat"] and torch.is_tensor(x) and x.device.type == "xpu"
+
+
+def _c2f_forward(self, x):
+    """C2f.forward (also C3k2): halves from the BN kernel, concatenation by xpu_cat."""
+    if not _fast_cat_on(x):
+        return _orig["c2f_forward"](self, x)
+    y = list(_conv_split2(self.cv1, x, self.c))
+    y.extend(m(y[-1]) for m in self.m)
+    return self.cv2(_cat(y))
+
+
+def _c3_forward(self, x):
+    if not _fast_cat_on(x):
+        return _orig["c3_forward"](self, x)
+    return self.cv3(_cat((self.m(self.cv1(x)), self.cv2(x))))
+
+
+def _sppf_forward(self, x):
+    if not _fast_cat_on(x):
+        return _orig["sppf_forward"](self, x)
+    y = [self.cv1(x)]
+    y.extend(self.m(y[-1]) for _ in range(getattr(self, "n", 3)))
+    y = self.cv2(_cat(y))
+    return y + x if getattr(self, "add", False) else y
+
+
+def _c2psa_forward(self, x):
+    if not _fast_cat_on(x):
+        return _orig["c2psa_forward"](self, x)
+    a, b = _conv_split2(self.cv1, x, self.c)
+    b = self.m(b)
+    return self.cv2(_cat((a, b)))
+
+
+def _concat_forward(self, x):
+    if self.d == 1 and isinstance(x, (list, tuple)) and x and _fast_cat_on(x[0]):
+        return _cat(x)
+    return _orig["concat_forward"](self, x)
+
+
+# ---------------------------------------------------------------- attention: no transposed copies, fp16 softmax
+
+
+def _attention_forward(self, x):
+    """Ultralytics Attention.forward with the same math in a layout the XPU kernels like (fp16 autocast only):
+
+    - out^T = attn @ v^T instead of out = v @ attn^T, so softmax's backward gets a contiguous gradient (the stock
+      order hands it the transpose of a (B, heads, N, N) matrix, which it copies: ~1.7 ms per call at N=484);
+    - softmax on the fp16 scores, fp32 inside (autocast would cast the scores to an fp32 copy, softmax that, and the
+      next matmul would cast the result back to fp16: the same numbers);
+    - the output is written channels_last, so the add with pe and the proj conv need no format conversion.
+    Forward output bit-identical to the stock order on a yolo26s-shaped test; gradient error vs fp32 unchanged.
+    """
+    if not (_flags["fast_attn"] and x.device.type == "xpu" and self.format is None
+            and torch.is_autocast_enabled("xpu") and torch.get_autocast_dtype("xpu") == torch.float16):
+        return _orig["attention_forward"](self, x)
+    B, C, H, W = x.shape
+    N = H * W
+    qkv = self.qkv(x)
+    q, k, v = qkv.view(B, self.num_heads, self.key_dim * 2 + self.head_dim, N).split(
+        [self.key_dim, self.key_dim, self.head_dim], dim=2
+    )
+    s = (q * self.scale).transpose(-2, -1) @ k
+    if s.dtype == torch.float16:
+        with torch.autocast("xpu", enabled=False):
+            attn = s.softmax(dim=-1)
+    else:
+        attn = s.softmax(dim=-1)
+    o = attn @ v.transpose(-2, -1)  # (B, heads, N, head_dim)
+    o = o.transpose(1, 2).reshape(B, H, W, C).permute(0, 3, 1, 2)  # channels_last (B, C, H, W)
+    return self.proj(o + self.pe(v.reshape(B, C, H, W)))
+
+
 # ---------------------------------------------------------------- task-aligned assigner top-k
 
 
@@ -497,11 +733,13 @@ def _select_highest_overlaps(self, mask_pos, overlaps, n_max_boxes, align_metric
 
 
 def install(channels_last=True, sync_free_loss=True, fast_nms=True, fast_musgd=True, fused_bn=True, half_glue=True,
-            fast_topk=True):
+            fast_topk=True, fast_val=True, fast_cast=True, fast_cat=True, fast_attn=True):
     """Patch Ultralytics in place. Safe to call again with different flags. fast_musgd needs xpu_compat's scaler."""
     import xpu_compat
 
-    from ultralytics.models.yolo.detect import DetectionTrainer
+    from ultralytics.models.yolo.detect import DetectionTrainer, DetectionValidator
+    from ultralytics.nn import tasks as TK
+    from ultralytics.nn.modules import block as BM
     from ultralytics.nn.modules import conv as CM
     from ultralytics.optim import MuSGD
     from ultralytics.utils import loss as L
@@ -525,7 +763,29 @@ def install(channels_last=True, sync_free_loss=True, fast_nms=True, fast_musgd=T
             upsample_forward=torch.nn.Upsample.forward,
             select_topk_candidates=T.TaskAlignedAssigner.select_topk_candidates,
             select_highest_overlaps=T.TaskAlignedAssigner.select_highest_overlaps,
+            val_preprocess=DetectionValidator.preprocess,
+            val_postprocess=DetectionValidator.postprocess,
+            val_update_metrics=DetectionValidator.update_metrics,
+            predict_once=TK.BaseModel._predict_once,
+            conv2d_forward=torch.nn.Conv2d.forward,
+            c2f_forward=BM.C2f.forward,
+            c3_forward=BM.C3.forward,
+            sppf_forward=BM.SPPF.forward,
+            c2psa_forward=BM.C2PSA.forward,
+            concat_forward=CM.Concat.forward,
+            attention_forward=BM.Attention.forward,
         )
+        BM.Attention.forward = _attention_forward
+        BM.C2f.forward = _c2f_forward  # with fast_cat off these are the original forwards
+        BM.C3.forward = _c3_forward
+        BM.SPPF.forward = _sppf_forward
+        BM.C2PSA.forward = _c2psa_forward
+        CM.Concat.forward = _concat_forward
+        TK.BaseModel._predict_once = _predict_once  # with fast_cast off these are the original methods
+        torch.nn.Conv2d.forward = _conv2d_forward
+        DetectionValidator.preprocess = _val_preprocess  # with fast_val off these are the original methods
+        DetectionValidator.postprocess = _val_postprocess
+        DetectionValidator.update_metrics = _val_update_metrics
         MuSGD.step = _musgd_step  # without a prepared update it is the original step
         xpu_compat.XPUGradScaler.step = _scaler_step
         DetectionTrainer.set_model_attributes = _set_model_attributes
@@ -534,7 +794,8 @@ def install(channels_last=True, sync_free_loss=True, fast_nms=True, fast_musgd=T
         CM.Conv.forward = _conv_forward  # also DWConv; with fused_bn off it is the original forward
         torch.nn.Upsample.forward = _upsample_forward  # with half_glue off it is the original forward
     _flags.update(channels_last=channels_last, sync_free_loss=sync_free_loss, fast_nms=fast_nms, fast_musgd=fast_musgd,
-                  fused_bn=fused_bn, half_glue=half_glue, fast_topk=fast_topk)
+                  fused_bn=fused_bn, half_glue=half_glue, fast_topk=fast_topk, fast_val=fast_val,
+                  fast_cast=fast_cast, fast_cat=fast_cat, fast_attn=fast_attn)
     if fast_topk:
         T.TaskAlignedAssigner.select_topk_candidates = _select_topk_candidates
         T.TaskAlignedAssigner.select_highest_overlaps = _select_highest_overlaps
