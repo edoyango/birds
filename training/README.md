@@ -44,7 +44,9 @@ python training/train_xpu.py cfg=training/cfg-yolo26.yaml data_root=/path/to/bir
 
 Most numbers in this README come from a 25-epoch run of this command (`epochs=25`); the 120-epoch run is in
 [INT8 after long training](#int8-after-long-training-the-head-clips). Ultralytics validates after the last epoch even
-with `val=False`; on this 15 GB machine that ran out of memory with `workers=8` (resume with `resume=True workers=2`).
+with `val=False`. On this 15 GB machine `workers=8` ran out of memory: stock Ultralytics gives validation twice the
+training workers (8 + 12 processes). `train_xpu.py` and `cfg-yolo26.yaml` now use 6 + 6 (`workers`, `val_workers`);
+resume a killed run with `resume=True`, which passes the same worker counts.
 
 - `device=xpu`, fp16 AMP. `torch.amp.GradScaler` uses float64 internally, which the A770 does not have, so
   `xpu_compat.py` swaps in a scaler that does the same arithmetic in float32 (the loss scale is a power of two, so the
@@ -53,11 +55,11 @@ with `val=False`; on this 15 GB machine that ran out of memory with `workers=8` 
 - Validation: stock Ultralytics sends XPU boxes through a Python NMS loop (~80 ms per image) that trips its own time
   limit (`NMS time limit exceeded`) and silently drops detections, so mAP it reports on XPU is wrong (the final eval
   of one run said mAP50-95 0.408 for weights that score 0.644). `train_xpu.py` fixes this by default (see
-  [Training speed](#training-speed-xpu_speedupspy)): validation then takes ~15 s and `val=True` is affordable. Runs
+  [Training speed](#training-speed-xpu_speedupspy)): validation then takes ~7 s and `val=True` is affordable. Runs
   made with `speedups=false`, or before this change, should pass `val=False` and be evaluated with
   `eval_detections.py` + `eval_map.py` (below).
-- Speed: YOLO26s, 704 px, batch 32, 9650 images: about 2.1 min per epoch with the default speedups (~102 s of
-  training + ~20 s of validation; 4.6 min with `speedups=false`), 8 GB of GPU memory.
+- Speed: YOLO26s, 704 px, batch 32, 9650 images: about 1.7 min per epoch with the default speedups (~93 s of
+  training + ~7 s of validation; 4.6 min with `speedups=false`), ~7 GB of GPU memory.
 - On an identical batch, the fp32 loss on the XPU matches the CPU to 1e-6 (relative) and the gradient norm to 1e-5. fp16
   deviates from fp32 by a similar amount on the CPU as on the XPU, so that gap comes from fp16, not from the GPU.
 
@@ -77,6 +79,10 @@ per step, host syncs that drained the GPU queue, and a GPU idle while Python cau
 | `fused_bn` | `xpu_fused_bn.py`: Triton kernels for training-mode BatchNorm + SiLU (3 kernels forward, 3 backward, 8 passes over the activation instead of 13; SiLU recomputed in backward instead of storing BN's output). Training mode only: eval, validation and export use the stock modules | not bit-identical: fp32 arithmetic inside, so fp16 gradients are closer to fp32 than stock (cosine 0.93 vs 0.87 on one batch). See the accuracy note below |
 | `half_glue` | the input image goes uint8 -> fp16 channels_last in one kernel, and nearest upsampling runs in fp16 (autocast ran it, and the Concat after it, in fp32 and cast back) | forward bit-identical; gradients within 3e-5 |
 | `fast_topk` | the task-aligned assigner's `topk` (3-15 ms per call on XPU) as k argmax passes | same loss; ties between equal metrics may pick other anchors (`topk` leaves tie order unspecified) |
+| `fast_val` | validation NMS and metrics on the CPU: one device->host copy of the raw predictions per batch instead of ~12k tiny copies per pass (each a queue drain), and Ultralytics' own NMS on host tensors (0.2 ms/image for the ~20 candidates a trained model leaves, vs 1.7 ms on the XPU; images with >2000 boxes, e.g. early in training, still use the XPU kernel). Validation 15.2 -> 6.6 s (2164 images; 41 -> 27 s with plots) | identical NMS output, metrics, plots and confusion matrices |
+| `fast_cast` | all conv weights cast to fp16 in one multi-tensor kernel per forward (and their fp16 grads back in one), instead of autocast's ~280 per-weight cast kernels | bit-identical (same roundings) |
+| `fast_cat` | C2f/C3k2, C3, SPPF, C2PSA and Concat: the split after `cv1` is written by the fused BN kernel as two contiguous tensors (no channel-slice views for the next conv to copy), and concatenations use `xpu_cat.py` (Triton; 2-4x faster than `torch.cat` on NHWC, and its backward gives each input a contiguous gradient instead of a slice that consumers copy or add with a slow strided kernel) | same values; gradients move by ~1e-3 relative because other kernels now sum in another order, 200x below fp16's own error (fp16 vs fp32 gradient error 0.2094 with and without) |
+| `fast_attn` | attention (C2PSA, PSABlock) computed as out^T = attn @ v^T with an fp16 softmax and a channels_last output: no transposed copy of the (B, heads, N, N) gradient in softmax's backward, no fp32 copy of the scores. 8.2 -> 4.7 ms per block, forward + backward | forward bit-identical; gradient error vs fp32 unchanged |
 
 Measured with `bench_step.py` (yolo26s, 704 px, batch 32, fp16, MuSGD; ms per training step, 60-100 steps):
 
@@ -89,9 +95,12 @@ Measured with `bench_step.py` (yolo26s, 704 px, batch 32, fp16, MuSGD; ms per tr
 | + MuSGD change | 451 | 461 (69 images/s) |
 | + `fused_bn` | 397 (peak memory 10.2 -> 7.5 GB) | |
 | + constant copies removed, `half_glue`, `fast_topk`, cleanup threshold | 332 | 337 (95 images/s) |
+| + `fast_cast`, `fast_cat`, `fast_attn` (same-session baseline 335) | 301 (peak memory 7.3 -> 6.9 GB) | 307 (104 images/s) |
 
-In real training (`train_xpu.py` defaults, 2 epochs with validation): 125 s per epoch including ~20 s of validation, vs
-273 s per epoch without validation for stock Ultralytics.
+In real training (`train_xpu.py` defaults, 6 + 6 workers, epochs 2-3 of a `stop_epochs=3` run on the 120-epoch
+schedule): ~101 s per epoch (~93 s of training + ~7 s of validation). The same run with
+`speedups_off=fast_val,fast_cast,fast_cat,fast_attn` took ~125 s (~105 + ~19 s), and stock Ultralytics 273 s per epoch
+without validation. The final validation after training (plots, best.pt) took 30 s instead of 41 s.
 
 Accuracy checks, one 11-epoch run per variant on the 120-epoch schedule, compared at `epoch10.pt`:
 
@@ -119,13 +128,25 @@ Notes:
   on this GPU. Force `optimizer=MuSGD` when a short run should behave like a long one.
 - Tried and not used: `torch.compile` (slower, 591 vs 500 ms/step, though 3 GB less memory; needs `libze-dev` and
   `intel-ocloc`), an Inductor-compiled BatchNorm + SiLU (same speed as stock), XPU graphs (the A770 driver has no
-  graph record/replay), other Level Zero settings (copy engine, v2 adapter, batch size, driver in-order lists).
-- What is left per step: ~305 ms of GPU kernels (convolutions 114, fused BatchNorm ~66, concatenations 14, copies ~25)
-  and ~25 ms of GPU idle at the starts of the forward and backward passes and after GradScaler's inf check.
+  graph record/replay), other Level Zero settings (copy engine, v2 adapter, batch size, driver in-order lists),
+  `F.scaled_dot_product_attention` (no fused XPU kernel in torch 2.15: math fallback, no faster), a Triton weight
+  gradient for the depthwise 3x3 convs (1.5-2.3x slower than oneDNN's), the head's 4/7-channel 1x1 convs as matmuls
+  (slower in backward), padding the 3-channel input to 4 (first conv 13% faster, ~0.6 ms/step, not worth a 4-channel
+  image), re-tiling the fused BatchNorm reductions (already at ~85-100% of what a plain Triton read kernel reaches).
+- What is left per step (~300 ms, the GPU is now busy nearly all of it): convolutions ~120 ms (oneDNN `jit:ir`,
+  17-26 TFLOPS: forward 26, backward-data 25, backward-weights 17), fused BatchNorm ~73, the detection loss and
+  assigner ~23, MuSGD's Newton-Schulz ~14 (hundreds of tiny bf16 matmuls at ~50 us each), autograd's gradient sums
+  at branch points ~7, the image upload ~5.
+- The GPU clock: this card's power limit is 190 W (`/sys/class/drm/card1/device/hwmon/hwmon*/power1_max`). Under
+  convolutions it holds 2000-2400 MHz (pure fp16 matmul: 1750-1800 MHz at 190 W, 88 TFLOPS); memory-bound kernels
+  run at 2400 MHz. A higher limit (root, and only if the card and PSU are rated for it) would mostly speed up the
+  convolutions. Not changed here.
 - `bench_step.py` reproduces all of this: `mode=fixed|real|loader|opt` for timing, `stages=true` for a per-stage split,
-  `profile=<dir>` for a torch.profiler trace, `mode=parity|lossparity|optparity` for the numerical checks (parity
-  includes `fused_bn`, `half_glue` and `fast_topk` variants against fp32). Each patch can be switched on separately
-  (`launch_env= channels_last= sync_free= fast_musgd= fused_bn= half_glue= fast_topk=`).
+  `profile=<dir>` for a torch.profiler trace, `mode=parity|lossparity|optparity` for the numerical checks (use
+  `batch=16` for parity: with `launch_env=true` at batch 32 it ran out of device memory; parity
+  includes `fused_bn`, `half_glue`, `fast_topk` and `fast_cast` variants against fp32). Each patch can be switched on
+  separately (`launch_env= channels_last= sync_free= fast_musgd= fused_bn= half_glue= fast_topk= fast_cast=
+  fast_cat= fast_attn=`). In `train_xpu.py`, `speedups_off=fast_cat,fast_attn` (any of the names) turns patches off.
 
 ## 2. Pick an input size, export to ONNX
 

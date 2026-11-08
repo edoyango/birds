@@ -29,6 +29,9 @@ Bench keys:
     fused_bn  true: xpu_speedups' fused BatchNorm + SiLU Triton kernels (xpu_fused_bn)
     half_glue true: xpu_speedups' fp16 input image and fp16 nearest upsample
     fast_topk true: xpu_speedups' argmax-based top-k in the task-aligned assigner
+    fast_cast true: xpu_speedups' single multi-tensor fp16 cast of all conv weights (and its backward)
+    fast_cat  true: xpu_speedups' Triton channels_last concat + split-output BN in C2f/C3/SPPF/C2PSA/Concat
+    fast_attn true: xpu_speedups' attention in the order without transposed copies (fp16 softmax)
     launch_env true: xpu_speedups.set_launch_env() (UR_L0_USE_IMMEDIATE_COMMANDLISTS=0; with fused_bn also
               UR_L0_COMMANDLISTS_CLEANUP_THRESHOLD=-1)
     out       write the summary as JSON here
@@ -62,6 +65,9 @@ BENCH_DEFAULTS = {
     "fused_bn": False,
     "half_glue": False,
     "fast_topk": False,
+    "fast_cast": False,
+    "fast_cat": False,
+    "fast_attn": False,
     "launch_env": False,
     "out": None,
 }
@@ -360,14 +366,15 @@ def bench_parity(t, b):
     variants = {"fp32": (False, False, {}), "fp32_again": (False, False, {}), "fp16": (True, False, {}),
                 "fp16_cl": (True, True, {}), "fp32_cl": (False, True, {}),
                 "fp16_cl_fbn": (True, True, {"fused_bn": True}), "fp16_cl_glue": (True, True, {"half_glue": True}),
-                "fp16_cl_topk": (True, True, {"fast_topk": True}), "fp16_cl_new": (True, True, new)}
+                "fp16_cl_topk": (True, True, {"fast_topk": True}), "fp16_cl_new": (True, True, new),
+                "fp16_cl_cast": (True, True, {"fast_cast": True})}
     out = {}
     res = {}
     for name, (amp, cl, flags) in variants.items():
         out[name] = run(amp, cl, flags)
     pairs = [("fp32_again", "fp32"), ("fp16", "fp32"), ("fp16_cl", "fp32"), ("fp16_cl", "fp16"), ("fp32_cl", "fp32"),
              ("fp16_cl_fbn", "fp32"), ("fp16_cl_glue", "fp32"), ("fp16_cl_topk", "fp32"), ("fp16_cl_new", "fp32"),
-             ("fp16_cl_glue", "fp16_cl"), ("fp16_cl_topk", "fp16_cl")]
+             ("fp16_cl_glue", "fp16_cl"), ("fp16_cl_topk", "fp16_cl"), ("fp16_cl_cast", "fp16_cl")]
     for name, refname in pairs:
         if name not in out or refname not in out:
             continue
@@ -545,7 +552,8 @@ def main():
         xpu_compat.install()
         xpu_speedups.install(channels_last=b["channels_last"], sync_free_loss=b["sync_free"], fast_nms=True,
                              fast_musgd=b["fast_musgd"], fused_bn=b["fused_bn"],
-                             half_glue=b["half_glue"], fast_topk=b["fast_topk"])
+                             half_glue=b["half_glue"], fast_topk=b["fast_topk"], fast_val=False,
+                             fast_cast=b["fast_cast"], fast_cat=b["fast_cat"], fast_attn=b["fast_attn"])
 
     if b["mode"] == "loader":
         from ultralytics.models.yolo.detect import DetectionTrainer
@@ -576,7 +584,7 @@ def main():
         }
         res = modes.get(b["mode"], lambda: bench_train(t, b))()
     res.update({k: b[k] for k in ("channels_last", "sync_free", "fast_musgd", "fused_bn", "half_glue", "fast_topk",
-                                  "launch_env")})
+                                  "fast_cast", "fast_cat", "fast_attn", "launch_env")})
     res["env"] = {k: v for k, v in os.environ.items() if k.startswith(("UR_", "SYCL", "ZE_", "TORCHINDUCTOR"))}
     res["args"] = {k: args.get(k) for k in ("model", "imgsz", "batch", "workers", "amp", "compile", "optimizer")}
     print("RESULT", json.dumps(res))

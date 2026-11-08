@@ -42,12 +42,13 @@ _ew_configs = [triton.Config({"BLOCK": b}, num_warps=w) for b, w in _EW_TILES]
 
 
 def _red_autotune(fn):
-    return triton.autotune(_red_configs, key=["M", "C"], prune_configs_by={"early_config_prune": _prune_red},
+    key = ["M", "C", "C0"] if "C0" in fn.arg_names else ["M", "C"]
+    return triton.autotune(_red_configs, key=key, prune_configs_by={"early_config_prune": _prune_red},
                            cache_results=True)(fn)
 
 
 def _ew_autotune(fn):
-    return triton.autotune(_ew_configs, key=["total", "C"], cache_results=True)(fn)
+    return triton.autotune(_ew_configs, key=["total", "C", "C0"], cache_results=True)(fn)
 
 
 # --- kernels ------------------------------------------------------------------------------------------------------
@@ -110,8 +111,10 @@ def _stats_finalize(part_ptr, coef_ptr, w_ptr, b_ptr, rmean_ptr, rvar_ptr, nbt_p
 
 @_ew_autotune
 @triton.jit
-def _apply(x_ptr, y_ptr, coef_ptr, total, C: tl.constexpr, ACT: tl.constexpr, BLOCK: tl.constexpr):
-    """y = act(x * scale[c] + shift[c]) over the flat channels_last storage."""
+def _apply(x_ptr, y_ptr, y2_ptr, coef_ptr, total, C: tl.constexpr, C0: tl.constexpr, ACT: tl.constexpr,
+           BLOCK: tl.constexpr):
+    """y = act(x * scale[c] + shift[c]) over the flat channels_last storage. C0 > 0: channels [0, C0) go to y and
+    [C0, C) to y2, each a contiguous channels_last tensor (what .split((C0, C - C0), 1) + .contiguous() would give)."""
     o = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
     m = o < total
     c = o % C
@@ -119,13 +122,19 @@ def _apply(x_ptr, y_ptr, coef_ptr, total, C: tl.constexpr, ACT: tl.constexpr, BL
         + tl.load(coef_ptr + 3 * C + c)
     if ACT == 1:
         z = z * tl.sigmoid(z)
-    tl.store(y_ptr + o, z.to(y_ptr.dtype.element_ty), mask=m)
+    if C0 > 0:
+        row = o // C
+        first = c < C0
+        tl.store(y_ptr + row * C0 + c, z.to(y_ptr.dtype.element_ty), mask=m & first)
+        tl.store(y2_ptr + row * (C - C0) + (c - C0), z.to(y_ptr.dtype.element_ty), mask=m & (c >= C0))
+    else:
+        tl.store(y_ptr + o, z.to(y_ptr.dtype.element_ty), mask=m)
 
 
 @_red_autotune
 @triton.jit
-def _bwd_reduce(dy_ptr, x_ptr, coef_ptr, part_ptr, M, C, G, ROWS,
-                ACT: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_C: tl.constexpr):
+def _bwd_reduce(dy_ptr, dy2_ptr, x_ptr, coef_ptr, part_ptr, M, C, G, ROWS,
+                C0: tl.constexpr, ACT: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_C: tl.constexpr):
     """part[0, g, c] = sum dz, part[1, g, c] = sum dz * xhat over program g's rows (dz = grad of the BN output)."""
     pid_g = tl.program_id(0)
     cols = tl.program_id(1) * BLOCK_C + tl.arange(0, BLOCK_C)
@@ -143,7 +152,14 @@ def _bwd_reduce(dy_ptr, x_ptr, coef_ptr, part_ptr, M, C, G, ROWS,
         mask = (rows < r1)[:, None] & cmask[None, :]
         off = rows.to(tl.int64)[:, None] * C + cols[None, :]
         x = tl.load(x_ptr + off, mask=mask, other=0.0).to(tl.float32)
-        dz = tl.load(dy_ptr + off, mask=mask, other=0.0).to(tl.float32)
+        if C0 > 0:  # dy split over two tensors by channel (see _apply)
+            r64 = rows.to(tl.int64)[:, None]
+            first = (cols < C0)[None, :]
+            dz = tl.load(dy_ptr + r64 * C0 + cols[None, :], mask=mask & first, other=0.0).to(tl.float32) \
+                + tl.load(dy2_ptr + r64 * (C - C0) + (cols[None, :] - C0), mask=mask & ~first,
+                          other=0.0).to(tl.float32)
+        else:
+            dz = tl.load(dy_ptr + off, mask=mask, other=0.0).to(tl.float32)
         if ACT == 1:
             s = tl.sigmoid(x * scale + shift)
             dz = dz * s * (1.0 + (x * scale + shift) * (1.0 - s))
@@ -181,12 +197,19 @@ def _bwd_finalize(part_ptr, coef_ptr, w_ptr, db_ptr, dw_ptr, M, C, G, BLOCK_G: t
 
 @_ew_autotune
 @triton.jit
-def _bwd_dx(dy_ptr, x_ptr, dx_ptr, coef_ptr, total, C: tl.constexpr, ACT: tl.constexpr, BLOCK: tl.constexpr):
+def _bwd_dx(dy_ptr, dy2_ptr, x_ptr, dx_ptr, coef_ptr, total, C: tl.constexpr, C0: tl.constexpr, ACT: tl.constexpr,
+            BLOCK: tl.constexpr):
     o = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
     m = o < total
     c = o % C
     x = tl.load(x_ptr + o, mask=m, other=0.0).to(tl.float32)
-    dz = tl.load(dy_ptr + o, mask=m, other=0.0).to(tl.float32)
+    if C0 > 0:
+        row = o // C
+        first = c < C0
+        dz = tl.load(dy_ptr + row * C0 + c, mask=m & first, other=0.0).to(tl.float32) \
+            + tl.load(dy2_ptr + row * (C - C0) + (c - C0), mask=m & (c >= C0), other=0.0).to(tl.float32)
+    else:
+        dz = tl.load(dy_ptr + o, mask=m, other=0.0).to(tl.float32)
     if ACT == 1:
         z = x * tl.load(coef_ptr + 2 * C + c) + tl.load(coef_ptr + 3 * C + c)
         s = tl.sigmoid(z)
@@ -254,7 +277,7 @@ _L = {}  # kernel name -> _Launch, filled below
 
 class _BNAct(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, x, weight, bias, running_mean, running_var, num_batches_tracked, momentum, eps, act):
+    def forward(ctx, x, weight, bias, running_mean, running_var, num_batches_tracked, momentum, eps, act, split):
         N, C, H, W = x.shape
         M = N * H * W
         g, rows = _groups(M, C)
@@ -265,32 +288,46 @@ class _BNAct(torch.autograd.Function):
         _L["stats_finalize"]((triton.cdiv(C, _FIN_C),), (key, eps, momentum), part, coef, weight, bias, running_mean,
                              running_var, num_batches_tracked, M, C, g, eps, momentum, BLOCK_G=_FIN_G, BLOCK_C=_FIN_C,
                              num_warps=_FIN_W)
-        y = torch.empty_like(x, memory_format=torch.channels_last)
-        _L["apply"](_ew_grid(x.numel()), key, x, y, coef, x.numel(), C=C, ACT=act)
+        if split:
+            y = torch.empty((N, split, H, W), dtype=x.dtype, device=x.device, memory_format=torch.channels_last)
+            y2 = torch.empty((N, C - split, H, W), dtype=x.dtype, device=x.device, memory_format=torch.channels_last)
+        else:
+            y = y2 = torch.empty_like(x, memory_format=torch.channels_last)
+        _L["apply"](_ew_grid(x.numel()), (key, split), x, y, y2, coef, x.numel(), C=C, C0=split, ACT=act)
         ctx.save_for_backward(x, weight, coef)
         ctx.act = act
-        return y
+        ctx.split = split
+        return (y, y2) if split else y
 
     @staticmethod
-    def backward(ctx, dy):
+    def backward(ctx, dy, dy2=None):
         x, weight, coef = ctx.saved_tensors
-        if not dy.is_contiguous(memory_format=torch.channels_last):
-            dy = dy.contiguous(memory_format=torch.channels_last)
+        split = ctx.split
+        cl = torch.channels_last
+        if not dy.is_contiguous(memory_format=cl):
+            dy = dy.contiguous(memory_format=cl)
+        if split:
+            if not dy2.is_contiguous(memory_format=cl):
+                dy2 = dy2.contiguous(memory_format=cl)
+            if dy2.dtype != dy.dtype:
+                dy2 = dy2.to(dy.dtype)
+        else:
+            dy2 = dy
         N, C, H, W = x.shape
         M = N * H * W
         g, rows = _groups(M, C)
-        key = (M, C, x.dtype, dy.dtype, ctx.act)
+        key = (M, C, x.dtype, dy.dtype, ctx.act, split)
         part = torch.empty((2, g, C), dtype=torch.float32, device=x.device)
-        _L["bwd_reduce"](_red_grid(g, C), key, dy, x, coef, part, M, C, g, rows, ACT=ctx.act)
+        _L["bwd_reduce"](_red_grid(g, C), key, dy, dy2, x, coef, part, M, C, g, rows, C0=split, ACT=ctx.act)
         db = torch.empty(C, dtype=torch.float32, device=x.device)
         dw = torch.empty(C, dtype=torch.float32, device=x.device)
         coef = coef.clone()  # backward may run more than once (retain_graph); keep the saved coef pristine
         _L["bwd_finalize"]((triton.cdiv(C, _FIN_C),), key, part, coef, weight, db, dw, M, C, g, BLOCK_G=_FIN_G,
                            BLOCK_C=_FIN_C, num_warps=_FIN_W)
         dx = torch.empty_like(x, memory_format=torch.channels_last)
-        _L["bwd_dx"](_ew_grid(x.numel()), key, dy, x, dx, coef, x.numel(), C=C, ACT=ctx.act)
+        _L["bwd_dx"](_ew_grid(x.numel()), key, dy, dy2, x, dx, coef, x.numel(), C=C, C0=split, ACT=ctx.act)
         return (dx, dw if ctx.needs_input_grad[1] else None, db if ctx.needs_input_grad[2] else None,
-                None, None, None, None, None, None)
+                None, None, None, None, None, None, None)
 
 
 _L.update(stats=_Launch(_stats), stats_finalize=_Launch(_stats_finalize), apply=_Launch(_apply),
@@ -317,7 +354,13 @@ def supported(x, bn, act):
     )
 
 
-def bn_act(x, bn, act):
-    """act(bn(x)) for a training-mode BatchNorm2d and a SiLU/Identity act, fused (see the module docstring)."""
+def bn_act(x, bn, act, split=0):
+    """act(bn(x)) for a training-mode BatchNorm2d and a SiLU/Identity act, fused (see the module docstring).
+
+    split > 0: return (out[:, :split], out[:, split:]) as two contiguous channels_last tensors written directly by
+    the kernel (no chunk views, and no copies when they are used separately), with the same values.
+    """
+    if split and not 0 < split < x.shape[1]:
+        raise ValueError(f"split={split} for {x.shape[1]} channels")
     return _BNAct.apply(x, bn.weight, bn.bias, bn.running_mean, bn.running_var, bn.num_batches_tracked,
-                        float(bn.momentum), float(bn.eps), 1 if type(act) is torch.nn.SiLU else 0)
+                        float(bn.momentum), float(bn.eps), 1 if type(act) is torch.nn.SiLU else 0, int(split))
