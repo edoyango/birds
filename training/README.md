@@ -173,28 +173,71 @@ python training/export_onnx.py runs/detect/yolo26s_704/weights/last.pt --imgsz 4
   models are treated as RGB. See [Colour order](#colour-order) for whether it is worth it.
 - The metadata json records the two tensors the converter cuts at, found by graph structure.
 
-### Input size: 768x448 for the 864x486 camera frames
+### Input size: why 768x448
 
-FP32 (ONNX) accuracy of the same 704-trained checkpoint, full validation set (2164 images):
+The detector runs on frames as the cameras deliver them: `extract_birbs.py` asks for 1280x720. 864x486 is only the
+size of the saved videos. The validation set is about half 864x486 and half 1280x720 frames, and birds are about the
+same size in native pixels in both (shorter side: 5th percentile ~28 px, median ~60 px), so the 1280x720 frames are
+the harder case once letterboxed.
 
-| input | anchors N | mAP50 | mAP50-95 | letterbox from 864x486 |
+**Larger is not better.** FP32 (ONNX), the 25-epoch 704-trained checkpoint, full validation set (2164 images):
+
+| input | anchors N | mAP50 | mAP50-95 | letterbox scale, 864x486 / 1280x720 frames |
 |---|---|---|---|---|
-| 704x704 | 10164 | 0.954 | 0.752 | downscale 0.81, 44% of the canvas is padding |
-| **768x448** | **7056** | **0.952** | **0.748** | **downscale 0.89, 4% padding** |
-| 640x640 | 8400 | 0.951 | 0.745 | downscale 0.74 |
-| 896x512 | 9408 | 0.949 | 0.742 | upscale 1.04 |
-| 1024x576 | 12096 | 0.944 | 0.727 | upscale 1.19 |
+| 704x704 | 10164 | 0.954 | 0.752 | 0.81 / 0.55, 44% of the canvas is padding |
+| **768x448** | **7056** | **0.952** | **0.748** | **0.89 / 0.60, 4% padding** |
+| 640x640 | 8400 | 0.951 | 0.745 | 0.74 / 0.50 |
+| 896x512 | 9408 | 0.949 | 0.742 | 1.04 (upscale) / 0.70 |
+| 1024x576 | 12096 | 0.944 | 0.727 | 1.19 (upscale) / 0.80 |
 
 768x448 is within 0.4 points of 704x704 with 31% fewer pixels, and it has two properties that matter on the board:
 
 - **It downscales.** RGA, which does the letterbox resize on the board, shifted the image content by about one pixel
   when *upscaling* (checked by comparing the RGA output with a cv2 resize) and not when downscaling. At 896x512 the
-  board scored 0.714 mAP50-95 on 720 frames against 0.753 for FP32, a 4-point gap of which INT8 explains about 1.5. At
-  768x448 the board matches the INT8 simulator (0.754 vs 0.753, table below).
+  board scored 0.714 mAP50-95 on 720 864x486 frames against 0.753 for FP32, a 4-point gap of which INT8 explains about
+  1.5. At 768x448 the board matches the INT8 simulator (0.754 vs 0.753, table below).
 - **Its anchor count is a multiple of 16** (N = (H/8)(W/8) + (H/16)(W/16) + (H/32)(W/32)). On the Orange Pi 5 Pro a
   704x704 nano model (N = 10164) returned unstable values in a few box outputs at the row edges on real frames, in 3 of 3
   runs, while 640x640, 896x512 and 768x448 models did not. This is an observation on this board, not a documented rule.
-  `export_onnx.py` warns when N is not a multiple of 16.
+  `export_onnx.py` warns when N is not a multiple of 16. The 16:9 sizes that pass: 448x256, 512x288, 640x384, 768x448,
+  896x512 (576x352 and 704x416 do not).
+
+**Smaller is not better either** (measured 2026-11-09 with the 120-epoch model). The floor comes from the architecture:
+
+- yolo26s and yolo26m share the geometry that matters: strides 8/16/32, no DFL, and the same task-aligned assigner
+  (box sides under 16 px are widened to 16 px when picking anchors). m is wider, not differently strided, so the same
+  floor applies to it (not measured on m).
+- At 768x448 the trained one-to-one head finds 94% of birds on the stride-16 level and none on stride 32. Birds whose
+  shorter side is below ~20-24 px *in the network input* fall to the stride-8 level, which recalls them 0.4-0.75 at
+  conf 0.5, against 0.88-0.96 for bigger birds. The receptive field is not the limit (~550 px).
+- So the rule is to keep birds at ~20 px or more in the input. Share of validation birds below 20 px: 768x448 5.5%
+  (8% of those in 1280x720 frames), 640x384 11% (17%), 512x288 24% (33%), 448x256 33% (43%).
+
+Change against 768x448, full validation set, F1 at conf 0.5 / mAP50-95:
+
+| input | 120-epoch model, FP32 | same pixels upscaled and run at 768x448 (image detail only) | fine-tuned 10 epochs at that size, FP32 | board INT8 |
+|---|---|---|---|---|
+| 896x512 to 704x416 | within ±0.005 / ±0.008 | | | |
+| 640x384 | -0.002 / -0.005 | +0.002 / -0.001 | -0.003 / -0.007 | -0.006 / -0.016 |
+| 576x352 | -0.008 / -0.019 | +0.001 / -0.002 | | |
+| 512x288 | -0.014 / -0.042 | 0.000 / -0.005 | -0.015 / -0.036 | |
+| 448x256 | -0.038 / -0.090 | -0.003 / -0.013 | -0.030 / -0.068 | |
+| 320x192 | -0.231 / -0.317 | -0.021 / -0.050 | | |
+
+- The detail-only column shows that a 512-wide frame still carries the information. The loss from running at 512 comes
+  from the birds becoming small for the strides, and training at that size wins back only about a quarter of it
+  (fine-tunes from the 120-epoch model, compared with an identical fine-tune at 704 evaluated at 768x448;
+  `runs/detect/minsize_ft*`). Training at 512 and running at 640 was no better than training at 704.
+- The losses are recall; precision stays at ~0.95. On the 1280x720 frames alone they are about 1.5x larger.
+- Board, 640x384 against 768x448, both INT8, all 2164 frames (`runs/final120/r640/`): 252 vs 323 ms per 24-frame batch
+  (22% less), F1 0.928 vs 0.934, mAP50-95 0.737 vs 0.754. INT8 costs more at 640x384 (FP32 to board: -0.021
+  mAP50-95, against -0.009 at 768x448), mostly in the boxes of the smallest birds.
+- Training below 704 does not save much time on the A770 (3.6 vs 3.3 it/s at 512 vs 704).
+
+**Decision: 768x448.** 640x384 is the smallest usable input and the only cheaper option worth considering. On the board
+it costs about 0.6 points of F1 and 1.6 of mAP50-95 for 22% less inference time. At 768x448 the detector takes ~13.5 ms
+per frame, so two cameras at 10 fps use about a quarter of it. Revisit 640x384 if inference time gets tight (more
+cameras or a higher frame rate); below 640x384, retraining does not fix the loss.
 
 ## 3. Calibration set and conversion
 
