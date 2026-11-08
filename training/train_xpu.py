@@ -13,6 +13,12 @@ Extra keys handled here (not passed to Ultralytics):
     data_root   Roboflow-style dataset dir with train/images, valid/images and data.yaml.
                 A dataset yaml with absolute paths is generated for you.
     names_yaml  Take class names from this yaml instead of <data_root>/data.yaml.
+    speedups    true (default): xpu_speedups.py (Level Zero launch setting, channels_last, sync-free loss,
+                torchvision NMS for validation, MuSGD queued before the inf check); ~1.9x faster epochs on
+                the A770 for yolo26s (273 -> 143 s before the MuSGD change).
+                false: stock Ultralytics behaviour.
+    stop_epochs Stop after this many epochs while keeping the LR schedule of `epochs` (for short checks
+                against the start of a full run). Ultralytics validates and saves on the stopping epoch.
 
 Defaults: device=xpu, amp=True (fp16). fp64 never reaches the GPU (see xpu_compat.py).
 """
@@ -24,6 +30,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import xpu_compat  # noqa: E402
+import xpu_speedups  # noqa: E402
 
 
 def parse_args(argv):
@@ -57,6 +64,8 @@ def main():
         args = base
     data_root = args.pop("data_root", None)
     names_yaml = args.pop("names_yaml", None)
+    speedups = args.pop("speedups", True)
+    stop_epochs = args.pop("stop_epochs", None)
     if data_root:
         args["data"] = make_data_yaml(data_root, names_yaml)
     if "data" not in args:
@@ -66,11 +75,23 @@ def main():
     model_name = args.pop("model", "yolo26n.pt")
 
     if str(args["device"]).startswith("xpu"):
+        if speedups:
+            xpu_speedups.set_launch_env()  # before the first XPU call
         xpu_compat.install()  # before ultralytics builds its GradScaler
+        if speedups:
+            xpu_speedups.install(channels_last=True, sync_free_loss=True, fast_nms=True, fast_musgd=True)
 
     from ultralytics import YOLO
 
-    YOLO(model_name).train(**args)
+    model = YOLO(model_name)
+    if stop_epochs:
+
+        def stop_early(trainer):
+            if trainer.epoch + 1 >= int(stop_epochs):
+                trainer.stop = True
+
+        model.add_callback("on_train_epoch_end", stop_early)
+    model.train(**args)
 
 
 if __name__ == "__main__":

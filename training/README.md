@@ -50,13 +50,58 @@ with `val=False`; on this 15 GB machine that ran out of memory with `workers=8` 
   `xpu_compat.py` swaps in a scaler that does the same arithmetic in float32 (the loss scale is a power of two, so the
   float32 reciprocal is exact). Ultralytics itself needed no other change.
 - `deterministic: false` in `cfg-yolo26.yaml`. The Ultralytics default is about 40% slower per step on this GPU.
-- `val=False` is worth passing. Ultralytics validates with the NMS head; on this machine that took 3.3 min per epoch
-  (about as long as training one) and logged `NMS time limit exceeded` on nearly every batch, which truncates NMS and so
-  makes the reported mAP unreliable. I did not isolate whether the XPU NMS or the early-training candidate counts were to
-  blame. Evaluate with `eval_detections.py` + `eval_map.py` instead (below).
-- Speed: YOLO26s, 704 px, batch 32: about 4.2 min per epoch (9650 images), 10.4 GB of GPU memory.
+- Validation: stock Ultralytics sends XPU boxes through a Python NMS loop (~80 ms per image) that trips its own time
+  limit (`NMS time limit exceeded`) and silently drops detections, so mAP it reports on XPU is wrong (the final eval
+  of one run said mAP50-95 0.408 for weights that score 0.644). `train_xpu.py` fixes this by default (see
+  [Training speed](#training-speed-xpu_speedupspy)): validation then takes ~15 s and `val=True` is affordable. Runs
+  made with `speedups=false`, or before this change, should pass `val=False` and be evaluated with
+  `eval_detections.py` + `eval_map.py` (below).
+- Speed: YOLO26s, 704 px, batch 32, 9650 images: about 2.3 min per epoch with the default speedups (4.6 min with
+  `speedups=false`), 11 GB of GPU memory.
 - On an identical batch, the fp32 loss on the XPU matches the CPU to 1e-6 (relative) and the gradient norm to 1e-5. fp16
   deviates from fp32 by a similar amount on the CPU as on the XPU, so that gap comes from fp16, not from the GPU.
+
+### Training speed (`xpu_speedups.py`)
+
+A YOLO26 training step on the A770 was limited by the CPU, not the GPU or the data loader: ~4700 kernel launches per
+step, several host syncs, and a GPU idle while Python caught up. `train_xpu.py` applies `xpu_speedups.py` unless
+`speedups=false`:
+
+| patch | what | effect on results |
+|---|---|---|
+| launch setting | `UR_L0_USE_IMMEDIATE_COMMANDLISTS=0`. The driver's default immediate command lists cost ~22 us of CPU per kernel launch (~157 us while the GPU is busy); batched lists cost ~5-36 us | bit-identical |
+| `channels_last` | NHWC weights and input on XPU (Ultralytics only does this on CUDA). Removes oneDNN's NCHW<->blocked reorders around every conv (158 ms/step of GPU time) and uses faster BatchNorm kernels | summation order only: fp32 grads within 1e-4 of NCHW. Checkpoints are still saved NCHW |
+| sync-free loss | removes the 16 host syncs per step in the detection loss (strides read back from the GPU in `make_anchors`, `unique`/`max` in target preprocessing, two `nonzero` calls) | gradients bit-identical; loss within 1.4e-7 (summation order) |
+| validation NMS | `torchvision.ops.nms` on XPU instead of Ultralytics' Python loop | identical kept boxes (checked on 30 validation batches) |
+| MuSGD | queues MuSGD's momentum + Newton-Schulz work before GradScaler's inf check (a host sync that waits for the backward pass) instead of after it | bit-identical parameters and optimizer state |
+
+Measured with `bench_step.py` (yolo26s, 704 px, batch 32, fp16, MuSGD; ms per training step, 100+ steps):
+
+| | reused batches | real data loader |
+|---|---|---|
+| stock Ultralytics | 849 | 885 |
+| + launch setting | 675 | |
+| + `channels_last` | 500 | |
+| + sync-free loss | 462 | 473 |
+| + MuSGD change | 451 | 461 (69 images/s) |
+
+In real training: 143 s per epoch vs 273 s (11 epochs of the 120-epoch recipe, run before the MuSGD change).
+Against the first 11 epochs of the stock
+120-epoch run, training losses tracked within a few percent and the epoch-10 checkpoints scored mAP50 0.923 vs 0.917,
+mAP50-95 0.644 vs 0.652 (one run each, so this rules out a regression, not a ~0.01 difference). The GPU is now busy
+~88% of a step; what is left is GPU work (convs, BatchNorm, layout/dtype copies, the assigner's `topk`).
+
+Notes:
+- The data loader is not a limit: 8 workers produce ~510 images/s, 4 are plenty.
+- MuSGD is what `optimizer=auto` picks for long runs (>10k iterations); short runs get AdamW, which is ~30 s per epoch
+  cheaper on this GPU (its step is ~9 ms vs MuSGD's ~190 ms of CPU). Force `optimizer=MuSGD` when a short run
+  should behave like a long one.
+- Tried and not used: `torch.compile` (slower, 591 vs 500 ms/step, though 3 GB less memory; needs `libze-dev` and
+  `intel-ocloc`), XPU graphs (the A770 driver has no graph record/replay), other Level Zero settings (copy engine,
+  v2 adapter: no gain).
+- `bench_step.py` reproduces all of this: `mode=fixed|real|loader|opt` for timing, `stages=true` for a per-stage split,
+  `profile=<dir>` for a torch.profiler trace, `mode=parity|lossparity|optparity` for the numerical checks. Each patch
+  can be switched on separately (`launch_env= channels_last= sync_free= fast_musgd=`).
 
 ## 2. Pick an input size, export to ONNX
 
