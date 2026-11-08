@@ -13,10 +13,13 @@ Extra keys handled here (not passed to Ultralytics):
     data_root   Roboflow-style dataset dir with train/images, valid/images and data.yaml.
                 A dataset yaml with absolute paths is generated for you.
     names_yaml  Take class names from this yaml instead of <data_root>/data.yaml.
-    speedups    true (default): xpu_speedups.py (Level Zero launch setting, channels_last, sync-free loss,
-                torchvision NMS for validation, MuSGD queued before the inf check); ~1.9x faster epochs on
-                the A770 for yolo26s (273 -> 143 s before the MuSGD change).
+    speedups    true (default): xpu_speedups.py (Level Zero launch settings, channels_last, sync-free loss,
+                torchvision NMS for validation, MuSGD queued before the inf check, fp16 input/upsample, argmax
+                top-k in the assigner); yolo26s b32: 885 -> 332 ms/step with fused_bn (fixed batches).
                 false: stock Ultralytics behaviour.
+    fused_bn    true (default, with speedups): fused BatchNorm + SiLU Triton kernels (xpu_fused_bn.py). Training
+                mode only; eval and export use the stock modules, so exported/RKNN models are unaffected.
+                false: stock BatchNorm + SiLU.
     stop_epochs Stop after this many epochs while keeping the LR schedule of `epochs` (for short checks
                 against the start of a full run). Ultralytics validates and saves on the stopping epoch.
 
@@ -66,6 +69,7 @@ def main():
     names_yaml = args.pop("names_yaml", None)
     speedups = args.pop("speedups", True)
     stop_epochs = args.pop("stop_epochs", None)
+    fused_bn = args.pop("fused_bn", True)
     if data_root:
         args["data"] = make_data_yaml(data_root, names_yaml)
     if "data" not in args:
@@ -76,10 +80,11 @@ def main():
 
     if str(args["device"]).startswith("xpu"):
         if speedups:
-            xpu_speedups.set_launch_env()  # before the first XPU call
+            xpu_speedups.set_launch_env(deep_queue=bool(fused_bn))  # before the first XPU call
         xpu_compat.install()  # before ultralytics builds its GradScaler
         if speedups:
-            xpu_speedups.install(channels_last=True, sync_free_loss=True, fast_nms=True, fast_musgd=True)
+            xpu_speedups.install(channels_last=True, sync_free_loss=True, fast_nms=True, fast_musgd=True,
+                                 fused_bn=bool(fused_bn), half_glue=True, fast_topk=True)
 
     from ultralytics import YOLO
 

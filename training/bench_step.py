@@ -14,7 +14,8 @@ Bench keys:
               real   iterate the real train loader
               loader iterate the train loader only (no GPU), report images/s
               opt    time the pieces of optimizer_step for MuSGD and AdamW, and print MuSGD's Newton-Schulz batches
-              parity loss/gradients on one batch: fp32 (twice), fp16, fp16+channels_last, fp32+channels_last
+              parity loss/gradients on one batch: fp32 (twice), fp16, fp16+channels_last, fp32+channels_last, and
+                     fp16+channels_last with fused_bn / half_glue / fast_topk / all three, against fp32
               lossparity  original vs sync-free loss (xpu_speedups) on the same predictions, `nbatches` batches
               optparity   original vs fast_musgd optimizer steps from identical states and gradients (incl. an inf
                           step that must be skipped): params and optimizer state compared bit for bit
@@ -25,7 +26,11 @@ Bench keys:
     channels_last  true: model weights and input in NHWC (xpu_speedups; Ultralytics only does this on CUDA)
     sync_free true: xpu_speedups' host-sync-free detection loss
     fast_musgd true: xpu_speedups' MuSGD queued before GradScaler's inf check
-    launch_env true: xpu_speedups.set_launch_env() (UR_L0_USE_IMMEDIATE_COMMANDLISTS=0)
+    fused_bn  true: xpu_speedups' fused BatchNorm + SiLU Triton kernels (xpu_fused_bn)
+    half_glue true: xpu_speedups' fp16 input image and fp16 nearest upsample
+    fast_topk true: xpu_speedups' argmax-based top-k in the task-aligned assigner
+    launch_env true: xpu_speedups.set_launch_env() (UR_L0_USE_IMMEDIATE_COMMANDLISTS=0; with fused_bn also
+              UR_L0_COMMANDLISTS_CLEANUP_THRESHOLD=-1)
     out       write the summary as JSON here
 Unset Ultralytics keys default to the 120-epoch recipe (epochs=120 -> optimizer=auto picks MuSGD).
 """
@@ -54,6 +59,9 @@ BENCH_DEFAULTS = {
     "channels_last": False,
     "sync_free": False,
     "fast_musgd": False,
+    "fused_bn": False,
+    "half_glue": False,
+    "fast_topk": False,
     "launch_env": False,
     "out": None,
 }
@@ -324,31 +332,42 @@ def bench_parity(t, b):
     names = [n for n, p in model.named_parameters() if p.requires_grad]
     scale = 1024.0
 
-    def run(amp, cl):
+    def run(amp, cl, flags):
+        saved = dict(xpu_speedups._flags)
+        xpu_speedups.install(**{**saved, **flags})  # the _flags keys are install()'s arguments
         model.to(memory_format=torch.channels_last if cl else torch.contiguous_format)
         batch = dict(batch_cpu)
-        with autocast(amp, device=t.device.type):
-            batch = DetectionPre.preprocess(t, batch)
-            if cl:
-                batch["img"] = batch["img"].contiguous(memory_format=torch.channels_last)
-            loss, items = unwrap_model(model).loss(batch, model(batch["img"]))
-        sc = scale
-        while True:  # halve the loss scale until no fp16 gradient overflows (what GradScaler would do)
-            model.zero_grad(set_to_none=True)
-            (loss.sum() * sc).backward(retain_graph=True)
-            g = [p.grad.detach().float().flatten() / sc for p in params]
-            if all(bool(torch.isfinite(x).all()) for x in g) or sc < 1:
-                break
-            sc /= 2
+        try:
+            with autocast(amp, device=t.device.type):
+                batch = DetectionPre.preprocess(t, batch)
+                if cl:
+                    batch["img"] = batch["img"].contiguous(memory_format=torch.channels_last)
+                loss, items = unwrap_model(model).loss(batch, model(batch["img"]))
+            sc = scale
+            while True:  # halve the loss scale until no fp16 gradient overflows (what GradScaler would do)
+                model.zero_grad(set_to_none=True)
+                (loss.sum() * sc).backward(retain_graph=True)
+                g = [p.grad.detach().float().flatten() / sc for p in params]
+                if all(bool(torch.isfinite(x).all()) for x in g) or sc < 1:
+                    break
+                sc /= 2
+        finally:
+            xpu_speedups.install(**saved)
         return loss.detach().float().cpu(), {k: float(v) for k, v in items.items()}, g, sc
 
-    variants = {"fp32": (False, False), "fp32_again": (False, False), "fp16": (True, False), "fp16_cl": (True, True),
-                "fp32_cl": (False, True)}
+    # name: (amp, channels_last, xpu_speedups flags for this run on top of the command line's)
+    new = {"fused_bn": True, "half_glue": True, "fast_topk": True}
+    variants = {"fp32": (False, False, {}), "fp32_again": (False, False, {}), "fp16": (True, False, {}),
+                "fp16_cl": (True, True, {}), "fp32_cl": (False, True, {}),
+                "fp16_cl_fbn": (True, True, {"fused_bn": True}), "fp16_cl_glue": (True, True, {"half_glue": True}),
+                "fp16_cl_topk": (True, True, {"fast_topk": True}), "fp16_cl_new": (True, True, new)}
     out = {}
     res = {}
-    for name, (amp, cl) in variants.items():
-        out[name] = run(amp, cl)
-    pairs = [("fp32_again", "fp32"), ("fp16", "fp32"), ("fp16_cl", "fp32"), ("fp16_cl", "fp16"), ("fp32_cl", "fp32")]
+    for name, (amp, cl, flags) in variants.items():
+        out[name] = run(amp, cl, flags)
+    pairs = [("fp32_again", "fp32"), ("fp16", "fp32"), ("fp16_cl", "fp32"), ("fp16_cl", "fp16"), ("fp32_cl", "fp32"),
+             ("fp16_cl_fbn", "fp32"), ("fp16_cl_glue", "fp32"), ("fp16_cl_topk", "fp32"), ("fp16_cl_new", "fp32"),
+             ("fp16_cl_glue", "fp16_cl"), ("fp16_cl_topk", "fp16_cl")]
     for name, refname in pairs:
         if name not in out or refname not in out:
             continue
@@ -522,10 +541,11 @@ def main():
         args["device"] = "cpu"  # the loader does not touch the GPU; skip AMP checks and the GPU model
     elif str(args["device"]).startswith("xpu"):
         if b["launch_env"]:
-            xpu_speedups.set_launch_env()
+            xpu_speedups.set_launch_env(deep_queue=bool(b["fused_bn"]))
         xpu_compat.install()
         xpu_speedups.install(channels_last=b["channels_last"], sync_free_loss=b["sync_free"], fast_nms=True,
-                             fast_musgd=b["fast_musgd"])
+                             fast_musgd=b["fast_musgd"], fused_bn=b["fused_bn"],
+                             half_glue=b["half_glue"], fast_topk=b["fast_topk"])
 
     if b["mode"] == "loader":
         from ultralytics.models.yolo.detect import DetectionTrainer
@@ -555,7 +575,8 @@ def main():
             "optparity": lambda: bench_optparity(t, b),
         }
         res = modes.get(b["mode"], lambda: bench_train(t, b))()
-    res.update({k: b[k] for k in ("channels_last", "sync_free", "fast_musgd", "launch_env")})
+    res.update({k: b[k] for k in ("channels_last", "sync_free", "fast_musgd", "fused_bn", "half_glue", "fast_topk",
+                                  "launch_env")})
     res["env"] = {k: v for k, v in os.environ.items() if k.startswith(("UR_", "SYCL", "ZE_", "TORCHINDUCTOR"))}
     res["args"] = {k: args.get(k) for k in ("model", "imgsz", "batch", "workers", "amp", "compile", "optimizer")}
     print("RESULT", json.dumps(res))

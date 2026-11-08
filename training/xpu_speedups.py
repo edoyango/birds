@@ -6,6 +6,11 @@ CPU time, and every host sync leaves the GPU idle while Python catches up. The p
 launch_env   UR_L0_USE_IMMEDIATE_COMMANDLISTS=0. With the default immediate command lists, each kernel launch
              costs ~22 us of CPU when the GPU is idle and ~157 us while it is busy; batched command lists cost
              ~5-36 us. Bit-identical results. Must be set before the first XPU call (set_launch_env()).
+             UR_L0_COMMANDLISTS_CLEANUP_THRESHOLD=-1 (set_launch_env(deep_queue=True), with fused_bn): in batched
+             mode every launch otherwise scans the command lists still in flight once there are more than 20, so a
+             launch costs more the further the CPU runs ahead of the GPU (~10 -> ~100 us), which stops the CPU from
+             building the lead it needs to cover the loss's many small ops. Completed lists are still recycled at
+             the per-step .item() syncs (600 steps: flat step time and memory).
 channels_last  NHWC weights and input on XPU (Ultralytics enables it only on CUDA). oneDNN then skips the
              NCHW<->blocked reorders around every convolution and BatchNorm uses its channels-last kernels.
              Same math, different summation order (fp32 grads within 1e-4 of NCHW).
@@ -18,6 +23,9 @@ sync_free_loss  Removes the 16 host syncs per step in the YOLO26 detection loss 
              - BboxLoss: fg_mask.nonzero() -> dense over all anchors, off-foreground anchors replaced by a constant
                box with weight 0 (same terms, different summation order); L1 head (reg_max=1, YOLO26) only,
                DFL heads fall back to the original
+             - host data turned into device tensors in the loss/assigner (torch.tensor(shape), a Python-list index,
+               torch.tensor(stride): 6 blocking host->device copies per step, each a full drain of the GPU queue)
+               -> cached device constants
 fast_nms     Validation NMS on XPU through torchvision's XPU kernel. Ultralytics sends XPU boxes through TorchNMS,
              a Python loop (~80 ms/image for YOLO26 here) that trips its time limit and silently drops detections:
              the final eval of an 11-epoch run reported mAP50-95 0.408 for weights that score 0.644. Same keep
@@ -28,6 +36,12 @@ fast_musgd   MuSGD (optimizer=auto for long runs) queues ~1150 small device ops 
              temporaries, by Ultralytics' own muon_update) and only applied after it, or dropped if the step is
              skipped. Same ops on the same values: bit-identical params and buffers.
              (XPU graphs would remove the CPU cost entirely but the A770 driver has no graph record/replay.)
+fused_bn     Ultralytics Conv's BatchNorm + SiLU in training mode as Triton kernels (xpu_fused_bn.py): 8 passes over
+             the activation instead of 13, BN output not stored. fp32 inside, so not bit-identical (closer to fp32).
+             Eval/validation/export use the stock modules.
+half_glue    fp16 where autocast needlessly promoted: the input image (uint8 -> fp16 channels_last in one kernel) and
+             nearest upsampling (+ the Concat after it). Forward bit-identical.
+fast_topk    TaskAlignedAssigner's topk (3-15 ms per call on XPU) as k argmax passes; same set except among ties.
 
 Call set_launch_env() before any XPU work, then install(...) before the trainer is built. Written against
 Ultralytics 8.4.204 / torch 2.15; the patched functions fall back to the originals for shapes they do not cover.
@@ -37,17 +51,25 @@ import os
 import torch
 
 LAUNCH_ENV = {"UR_L0_USE_IMMEDIATE_COMMANDLISTS": "0"}
+DEEP_QUEUE_ENV = {"UR_L0_COMMANDLISTS_CLEANUP_THRESHOLD": "-1"}  # see launch_env above; only with fused_bn
 
 _orig = {}
-_flags = {"channels_last": False, "sync_free_loss": False, "fast_nms": False, "fast_musgd": False}
+_flags = {"channels_last": False, "sync_free_loss": False, "fast_nms": False, "fast_musgd": False, "fused_bn": False,
+          "half_glue": False, "fast_topk": False}
 
 
-def set_launch_env():
-    """Set Level Zero launch settings; they only take effect if the XPU runtime is not initialized yet."""
-    for k, v in LAUNCH_ENV.items():
+def set_launch_env(deep_queue=True):
+    """Set Level Zero launch settings; they only take effect if the XPU runtime is not initialized yet.
+
+    deep_queue: also UR_L0_COMMANDLISTS_CLEANUP_THRESHOLD=-1. Measured with fused_bn on (yolo26s, b32: 348 -> 332
+    ms/step, stable over 600 steps without a queue synchronize, no host or device memory growth). With stock
+    BatchNorm the same setting made steps slower and erratic (434 -> 444-510 ms), so pass fused_bn's value here.
+    """
+    env = {**LAUNCH_ENV, **(DEEP_QUEUE_ENV if deep_queue else {})}
+    for k, v in env.items():
         os.environ.setdefault(k, v)
     if torch.xpu.is_initialized():
-        print(f"xpu_speedups: WARNING XPU already initialized, {list(LAUNCH_ENV)} may not take effect")
+        print(f"xpu_speedups: WARNING XPU already initialized, {list(env)} may not take effect")
 
 
 # ---------------------------------------------------------------- channels_last + host-side box counts (trainer)
@@ -69,9 +91,21 @@ def _preprocess_batch(self, batch):
         bi = batch.get("batch_idx")
         if torch.is_tensor(bi) and bi.device.type == "cpu":
             n_max = int(torch.bincount(bi.long()).max()) if bi.numel() else 0
-    batch = _orig["preprocess_batch"](self, batch)
-    if _uses_channels_last(self):
-        batch["img"] = batch["img"].contiguous(memory_format=torch.channels_last)
+    img = batch.get("img")
+    if (_flags["half_glue"] and _uses_channels_last(self) and self.amp and self.args.amp in (True, "fp16")
+            and self.args.multi_scale <= 0 and torch.is_tensor(img) and img.dtype == torch.uint8 and img.dim() == 4):
+        # What the first conv sees is autocast's fp16 rounding of float(img) / 255: compute exactly that, in one
+        # kernel, straight into a channels_last fp16 tensor (the stock path is uint8 -> fp32 -> /255 -> NHWC -> fp16)
+        for k, v in batch.items():
+            if torch.is_tensor(v):
+                batch[k] = v.to(self.device, non_blocking=True)
+        u8 = batch["img"]
+        out = torch.empty(u8.shape, dtype=torch.float16, device=u8.device, memory_format=torch.channels_last)
+        batch["img"] = torch.div(u8, 255, out=out)
+    else:
+        batch = _orig["preprocess_batch"](self, batch)
+        if _uses_channels_last(self):
+            batch["img"] = batch["img"].contiguous(memory_format=torch.channels_last)
     if n_max is not None:
         batch["n_max_boxes"] = n_max
     return batch
@@ -103,12 +137,116 @@ def _make_anchors(feats, strides, grid_cell_offset=0.5):
     return hit[0].clone(), hit[1].clone()  # callers own their copies, as with a fresh make_anchors call
 
 
-def _get_assigned_targets_and_loss(self, preds, batch, **kw):
+_imgsz_cache = {}
+
+
+def _imgsz_consts(self, feats, dtype):
+    """(imgsz, imgsz[[1, 0, 1, 0]]) as cached device tensors. Ultralytics builds them every call from host data
+    (torch.tensor(shape) and a Python-list index): two blocking host->device copies per loss head per step."""
+    key = (tuple(feats[0].shape[2:]), dtype, str(self.device), self.stride.data_ptr())
+    c = _imgsz_cache.get(key)
+    if c is None:
+        imgsz = torch.tensor(feats[0].shape[2:], device=self.device, dtype=dtype) * self.stride[0]
+        c = _imgsz_cache[key] = (imgsz, imgsz[[1, 0, 1, 0]])
+    return c
+
+
+def _get_assigned_targets_and_loss(self, preds, batch, **assign_kwargs):
+    """v8DetectionLoss.get_assigned_targets_and_loss (Ultralytics 8.4.204) with cached imgsz constants; it also hands
+    the host-side box count (batch["n_max_boxes"], see _preprocess_batch) to _preprocess_targets."""
+    from ultralytics.utils import loss as L
+
     self._n_max_boxes = batch.get("n_max_boxes") if isinstance(batch, dict) else None
     try:
-        return _orig["get_assigned_targets_and_loss"](self, preds, batch, **kw)
+        if type(self) is not L.v8DetectionLoss or self.device.type != "xpu":
+            return _orig["get_assigned_targets_and_loss"](self, preds, batch, **assign_kwargs)
+        loss = torch.zeros(3, device=self.device)  # box, cls, dfl
+        pred_distri, pred_scores = (
+            preds["boxes"].permute(0, 2, 1).contiguous(),
+            preds["scores"].permute(0, 2, 1).contiguous(),
+        )
+        anchor_points, stride_tensor = L.make_anchors(preds["feats"], self.stride, 0.5)
+
+        dtype = pred_scores.dtype
+        batch_size = pred_scores.shape[0]
+        imgsz, scale_tensor = _imgsz_consts(self, preds["feats"], dtype)
+
+        targets = torch.cat((batch["batch_idx"].view(-1, 1), batch["cls"].view(-1, 1), batch["bboxes"]), 1)
+        targets = self.preprocess(targets.to(self.device), batch_size, scale_tensor=scale_tensor)
+        gt_labels, gt_bboxes = targets.split((1, 4), 2)  # cls, xyxy
+        mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0.0)
+
+        pred_bboxes = self.bbox_decode(anchor_points, pred_distri)  # xyxy, (b, h*w, 4)
+
+        _, target_bboxes, target_scores, fg_mask, target_gt_idx = self.assigner(
+            pred_scores.detach().sigmoid(),
+            (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
+            anchor_points * stride_tensor,
+            gt_labels,
+            gt_bboxes,
+            mask_gt,
+            **assign_kwargs,
+        )
+
+        target_scores_sum = target_scores.sum().clamp_(min=1)
+
+        bce_loss = self.bce(pred_scores, target_scores.to(dtype))  # (bs, num_anchors, nc)
+        if self.class_weights is not None:
+            bce_loss *= self.class_weights
+        loss[1] = bce_loss.sum() / target_scores_sum  # BCE
+
+        loss[0], loss[2] = self.bbox_loss(
+            pred_distri,
+            pred_bboxes,
+            anchor_points,
+            target_bboxes / stride_tensor,
+            target_scores,
+            target_scores_sum,
+            fg_mask,
+            imgsz,
+            stride_tensor,
+        )
+
+        loss[0] *= self.hyp.box  # box gain
+        loss[1] *= self.hyp.cls  # cls gain
+        loss[2] *= self.hyp.dfl  # dfl gain
+        return (
+            (fg_mask, target_gt_idx, target_bboxes, anchor_points, stride_tensor),
+            loss,
+            dict(zip(self.loss_names, loss.detach())),
+        )
     finally:
         self._n_max_boxes = None
+
+
+
+class _ConstTensorTorch:
+    """Stands in for the `torch` module inside ultralytics.utils.tal (every attribute is torch's), except that
+    torch.tensor(<constant>, device=<xpu>, [dtype=]) of the given Python types returns a cached device tensor.
+
+    A torch.tensor(..., device=xpu) of host data is a blocking copy queued behind all pending GPU work: the host waits
+    for the GPU to drain, then the GPU idles through the loss's host-heavy small ops. Reviewed call sites (Ultralytics
+    8.4.204), both read-only uses of the new tensor: tal.py `torch.where(mask, torch.tensor(self.stride_val, ...), x)`
+    (349, 518). The loss's own constants are handled in _get_assigned_targets_and_loss.
+    """
+
+    def __init__(self, cache_types):
+        self._types = cache_types
+        self._cache = {}
+
+    def __getattr__(self, name):
+        return getattr(torch, name)
+
+    def tensor(self, data, *args, **kw):
+        dev = kw.get("device")
+        if (_flags["sync_free_loss"] and not args and type(data) in self._types and dev is not None
+                and set(kw) <= {"device", "dtype"} and torch.device(dev).type == "xpu"):
+            key = (type(data), tuple(data) if isinstance(data, torch.Size) else data, kw.get("dtype"), str(dev))
+            t = self._cache.get(key)
+            if t is None:
+                t = self._cache[key] = torch.tensor(data, **kw)
+            return t
+        return torch.tensor(data, *args, **kw)
 
 
 def _preprocess_targets(self, targets, batch_size, scale_tensor):
@@ -278,14 +416,93 @@ def _scaler_step(self, optimizer, *args, **kwargs):
         optimizer.__dict__.pop("_xpu_prepared", None)  # dropped if the step was skipped
 
 
+# ---------------------------------------------------------------- fp16 nearest upsample
+
+
+def _upsample_forward(self, x):
+    """nn.Upsample; nearest mode on an fp16 input under autocast runs in fp16 (autocast would run it in fp32).
+
+    Nearest upsampling only copies values, so the output is the same numbers; keeping fp16 also keeps the Concat that
+    follows (and its backward) in fp16 instead of promoting the whole concatenation to fp32 and casting it back.
+    """
+    if (_flags["half_glue"] and self.mode == "nearest" and x.dtype == torch.float16
+            and torch.is_autocast_enabled(x.device.type)):
+        with torch.autocast(x.device.type, enabled=False):
+            return _orig["upsample_forward"](self, x)
+    return _orig["upsample_forward"](self, x)
+
+
+# ---------------------------------------------------------------- fused BatchNorm + SiLU (Triton)
+
+
+def _conv_forward(self, x):
+    """Ultralytics Conv.forward with the BN + act pair fused in training (xpu_fused_bn); unchanged otherwise."""
+    y = self.conv(x)
+    if _flags["fused_bn"]:
+        import xpu_fused_bn
+
+        if xpu_fused_bn.supported(y, self.bn, self.act):
+            return xpu_fused_bn.bn_act(y, self.bn, self.act)
+    return self.act(self.bn(y))
+
+
+# ---------------------------------------------------------------- task-aligned assigner top-k
+
+
+def _topk_idx(x, k):
+    """Indices of the k largest values along the last dim (same set as torch.topk up to ties, which topk leaves
+    unspecified; here ties go to the lowest index). The XPU topk kernel takes 3-15 ms on the assigner's
+    (batch, boxes, 10164) metric; k argmax passes take 0.1-3 ms."""
+    if k == 1:
+        return x.argmax(-1, keepdim=True)
+    x = x.clone()
+    idx = []
+    for _ in range(k):
+        i = x.argmax(-1, keepdim=True)
+        idx.append(i)
+        x.scatter_(-1, i, float("-inf"))
+    return torch.cat(idx, -1)
+
+
+def _select_topk_candidates(self, metrics, topk_mask=None):
+    if topk_mask is None or metrics.device.type != "xpu":
+        return _orig["select_topk_candidates"](self, metrics, topk_mask)
+    topk_idxs = _topk_idx(metrics, self.topk)
+    topk_idxs.masked_fill_(~topk_mask, 0)
+    count_tensor = torch.zeros(metrics.shape, dtype=torch.int8, device=topk_idxs.device)
+    count_tensor.scatter_add_(-1, topk_idxs, torch.ones_like(topk_idxs, dtype=torch.int8))
+    count_tensor.masked_fill_(count_tensor > 1, 0)
+    return count_tensor
+
+
+def _select_highest_overlaps(self, mask_pos, overlaps, n_max_boxes, align_metric):
+    if self.topk2 == self.topk or mask_pos.device.type != "xpu":
+        return _orig["select_highest_overlaps"](self, mask_pos, overlaps, n_max_boxes, align_metric)
+    fg_mask = mask_pos.sum(-2)
+    mask_multi_gts = (fg_mask.unsqueeze(1) > 1).expand(-1, n_max_boxes, -1)
+    max_overlaps_idx = overlaps.max(1).indices
+    is_max_overlaps = torch.zeros(mask_pos.shape, dtype=mask_pos.dtype, device=mask_pos.device)
+    is_max_overlaps.scatter_(1, max_overlaps_idx.unsqueeze(1), 1)
+    mask_pos = torch.where(mask_multi_gts, is_max_overlaps, mask_pos)
+    align_metric = align_metric * mask_pos
+    max_overlaps_idx = _topk_idx(align_metric, self.topk2)
+    topk_idx = torch.zeros(mask_pos.shape, dtype=mask_pos.dtype, device=mask_pos.device)
+    topk_idx.scatter_(-1, max_overlaps_idx, 1.0)
+    mask_pos *= topk_idx
+    fg_mask, target_gt_idx = mask_pos.max(-2)
+    return target_gt_idx, fg_mask, mask_pos
+
+
 # ---------------------------------------------------------------- install / uninstall
 
 
-def install(channels_last=True, sync_free_loss=True, fast_nms=True, fast_musgd=True):
+def install(channels_last=True, sync_free_loss=True, fast_nms=True, fast_musgd=True, fused_bn=True, half_glue=True,
+            fast_topk=True):
     """Patch Ultralytics in place. Safe to call again with different flags. fast_musgd needs xpu_compat's scaler."""
     import xpu_compat
 
     from ultralytics.models.yolo.detect import DetectionTrainer
+    from ultralytics.nn.modules import conv as CM
     from ultralytics.optim import MuSGD
     from ultralytics.utils import loss as L
     from ultralytics.utils import nms as N
@@ -303,20 +520,37 @@ def install(channels_last=True, sync_free_loss=True, fast_nms=True, fast_musgd=T
             nms_boxes=N.nms_boxes,
             musgd_step=MuSGD.step,
             scaler_step=xpu_compat.XPUGradScaler.step,
+            conv_forward=CM.Conv.forward,
+            tal_torch=T.torch,
+            upsample_forward=torch.nn.Upsample.forward,
+            select_topk_candidates=T.TaskAlignedAssigner.select_topk_candidates,
+            select_highest_overlaps=T.TaskAlignedAssigner.select_highest_overlaps,
         )
         MuSGD.step = _musgd_step  # without a prepared update it is the original step
         xpu_compat.XPUGradScaler.step = _scaler_step
         DetectionTrainer.set_model_attributes = _set_model_attributes
         DetectionTrainer.preprocess_batch = _preprocess_batch
         N.nms_boxes = _nms_boxes  # non_max_suppression looks nms_boxes up in its module at call time
-    _flags.update(channels_last=channels_last, sync_free_loss=sync_free_loss, fast_nms=fast_nms, fast_musgd=fast_musgd)
+        CM.Conv.forward = _conv_forward  # also DWConv; with fused_bn off it is the original forward
+        torch.nn.Upsample.forward = _upsample_forward  # with half_glue off it is the original forward
+    _flags.update(channels_last=channels_last, sync_free_loss=sync_free_loss, fast_nms=fast_nms, fast_musgd=fast_musgd,
+                  fused_bn=fused_bn, half_glue=half_glue, fast_topk=fast_topk)
+    if fast_topk:
+        T.TaskAlignedAssigner.select_topk_candidates = _select_topk_candidates
+        T.TaskAlignedAssigner.select_highest_overlaps = _select_highest_overlaps
+    else:
+        T.TaskAlignedAssigner.select_topk_candidates = _orig["select_topk_candidates"]
+        T.TaskAlignedAssigner.select_highest_overlaps = _orig["select_highest_overlaps"]
     if sync_free_loss:
+        if not isinstance(T.torch, _ConstTensorTorch):
+            T.torch = _ConstTensorTorch((float, int))
         L.make_anchors = _make_anchors
         L.v8DetectionLoss.get_assigned_targets_and_loss = _get_assigned_targets_and_loss
         L.v8DetectionLoss.preprocess = _preprocess_targets
         T.TaskAlignedAssigner.get_box_metrics = _get_box_metrics
         L.BboxLoss.forward = _bbox_loss_forward
     else:
+        T.torch = _orig["tal_torch"]
         L.make_anchors = _orig["make_anchors"]
         L.v8DetectionLoss.get_assigned_targets_and_loss = _orig["get_assigned_targets_and_loss"]
         L.v8DetectionLoss.preprocess = _orig["preprocess"]

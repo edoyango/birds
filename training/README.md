@@ -56,52 +56,76 @@ with `val=False`; on this 15 GB machine that ran out of memory with `workers=8` 
   [Training speed](#training-speed-xpu_speedupspy)): validation then takes ~15 s and `val=True` is affordable. Runs
   made with `speedups=false`, or before this change, should pass `val=False` and be evaluated with
   `eval_detections.py` + `eval_map.py` (below).
-- Speed: YOLO26s, 704 px, batch 32, 9650 images: about 2.3 min per epoch with the default speedups (4.6 min with
-  `speedups=false`), 11 GB of GPU memory.
+- Speed: YOLO26s, 704 px, batch 32, 9650 images: about 2.1 min per epoch with the default speedups (~102 s of
+  training + ~20 s of validation; 4.6 min with `speedups=false`), 8 GB of GPU memory.
 - On an identical batch, the fp32 loss on the XPU matches the CPU to 1e-6 (relative) and the gradient norm to 1e-5. fp16
   deviates from fp32 by a similar amount on the CPU as on the XPU, so that gap comes from fp16, not from the GPU.
 
 ### Training speed (`xpu_speedups.py`)
 
-A YOLO26 training step on the A770 was limited by the CPU, not the GPU or the data loader: ~4700 kernel launches per
-step, several host syncs, and a GPU idle while Python caught up. `train_xpu.py` applies `xpu_speedups.py` unless
-`speedups=false`:
+A stock YOLO26 training step on the A770 was limited by the CPU, not the GPU or the data loader: ~4700 kernel launches
+per step, host syncs that drained the GPU queue, and a GPU idle while Python caught up. `train_xpu.py` applies
+`xpu_speedups.py` unless `speedups=false`:
 
 | patch | what | effect on results |
 |---|---|---|
-| launch setting | `UR_L0_USE_IMMEDIATE_COMMANDLISTS=0`. The driver's default immediate command lists cost ~22 us of CPU per kernel launch (~157 us while the GPU is busy); batched lists cost ~5-36 us | bit-identical |
+| launch settings | `UR_L0_USE_IMMEDIATE_COMMANDLISTS=0`: the driver's default immediate command lists cost ~22 us of CPU per kernel launch (~157 us while the GPU is busy); batched lists cost ~5-36 us. With `fused_bn` also `UR_L0_COMMANDLISTS_CLEANUP_THRESHOLD=-1`: otherwise every launch scans the command lists still in flight, so launches get slower (~10 -> ~100 us) the further the CPU runs ahead of the GPU | bit-identical |
 | `channels_last` | NHWC weights and input on XPU (Ultralytics only does this on CUDA). Removes oneDNN's NCHW<->blocked reorders around every conv (158 ms/step of GPU time) and uses faster BatchNorm kernels | summation order only: fp32 grads within 1e-4 of NCHW. Checkpoints are still saved NCHW |
-| sync-free loss | removes the 16 host syncs per step in the detection loss (strides read back from the GPU in `make_anchors`, `unique`/`max` in target preprocessing, two `nonzero` calls) | gradients bit-identical; loss within 1.4e-7 (summation order) |
+| sync-free loss | removes the host syncs in the detection loss: strides read back from the GPU in `make_anchors`, `unique`/`max` in target preprocessing, two `nonzero` calls, and 6 host->device copies of constants (`torch.tensor(shape)`, a Python-list index, `torch.tensor(stride)`), each of which waited for the whole GPU queue | gradients bit-identical; loss within 1.4e-7 (summation order) |
 | validation NMS | `torchvision.ops.nms` on XPU instead of Ultralytics' Python loop | identical kept boxes (checked on 30 validation batches) |
 | MuSGD | queues MuSGD's momentum + Newton-Schulz work before GradScaler's inf check (a host sync that waits for the backward pass) instead of after it | bit-identical parameters and optimizer state |
+| `fused_bn` | `xpu_fused_bn.py`: Triton kernels for training-mode BatchNorm + SiLU (3 kernels forward, 3 backward, 8 passes over the activation instead of 13; SiLU recomputed in backward instead of storing BN's output). Training mode only: eval, validation and export use the stock modules | not bit-identical: fp32 arithmetic inside, so fp16 gradients are closer to fp32 than stock (cosine 0.93 vs 0.87 on one batch). See the accuracy note below |
+| `half_glue` | the input image goes uint8 -> fp16 channels_last in one kernel, and nearest upsampling runs in fp16 (autocast ran it, and the Concat after it, in fp32 and cast back) | forward bit-identical; gradients within 3e-5 |
+| `fast_topk` | the task-aligned assigner's `topk` (3-15 ms per call on XPU) as k argmax passes | same loss; ties between equal metrics may pick other anchors (`topk` leaves tie order unspecified) |
 
-Measured with `bench_step.py` (yolo26s, 704 px, batch 32, fp16, MuSGD; ms per training step, 100+ steps):
+Measured with `bench_step.py` (yolo26s, 704 px, batch 32, fp16, MuSGD; ms per training step, 60-100 steps):
 
 | | reused batches | real data loader |
 |---|---|---|
 | stock Ultralytics | 849 | 885 |
-| + launch setting | 675 | |
+| + launch setting (immediate command lists off) | 675 | |
 | + `channels_last` | 500 | |
-| + sync-free loss | 462 | 473 |
+| + sync-free loss (first version) | 462 | 473 |
 | + MuSGD change | 451 | 461 (69 images/s) |
+| + `fused_bn` | 397 (peak memory 10.2 -> 7.5 GB) | |
+| + constant copies removed, `half_glue`, `fast_topk`, cleanup threshold | 332 | 337 (95 images/s) |
 
-In real training: 143 s per epoch vs 273 s (11 epochs of the 120-epoch recipe, run before the MuSGD change).
-Against the first 11 epochs of the stock
-120-epoch run, training losses tracked within a few percent and the epoch-10 checkpoints scored mAP50 0.923 vs 0.917,
-mAP50-95 0.644 vs 0.652 (one run each, so this rules out a regression, not a ~0.01 difference). The GPU is now busy
-~88% of a step; what is left is GPU work (convs, BatchNorm, layout/dtype copies, the assigner's `topk`).
+In real training (`train_xpu.py` defaults, 2 epochs with validation): 125 s per epoch including ~20 s of validation, vs
+273 s per epoch without validation for stock Ultralytics.
+
+Accuracy checks, one 11-epoch run per variant on the 120-epoch schedule, compared at `epoch10.pt`:
+
+| | val mAP50 / 50-95 (704, XPU) | FP32 ONNX 768x448 | RK3588 INT8 768x448 |
+|---|---|---|---|
+| stock run | 0.917 / 0.652 | | |
+| speedups before `fused_bn` | 0.923 / 0.644 | 0.880 / 0.614 | 0.881 / 0.613 |
+| with `fused_bn` | 0.909 / 0.629 | 0.847 / 0.578 | 0.854 / 0.580 |
+
+The `fused_bn` checkpoint is lower, but in that run alone consecutive epochs moved by 1.5-1.8 points (0.625 -> 0.643 ->
+0.629), so one checkpoint per run does not separate the two; a full 120-epoch run is the real check (`fused_bn=false`
+turns it off). Export and RKNN are unaffected: the ONNX graphs of the two checkpoints have the same 455 nodes and 210
+initializers (names, shapes, dtypes), and INT8 on the board matches FP32 for both.
 
 Notes:
-- The data loader is not a limit: 8 workers produce ~510 images/s, 4 are plenty.
-- MuSGD is what `optimizer=auto` picks for long runs (>10k iterations); short runs get AdamW, which is ~30 s per epoch
-  cheaper on this GPU (its step is ~9 ms vs MuSGD's ~190 ms of CPU). Force `optimizer=MuSGD` when a short run
-  should behave like a long one.
+- The data loader is not a limit: 8 workers produce ~510 images/s; the training loop waits ~0.2 ms per batch.
+- Batch size: 48 fits (12 GB) but is only 2% faster per image, and with Ultralytics' `nbs=64` it changes the optimizer
+  step from 64 images (32 x 2 accumulated) to 48. 64 does not fit in 16 GB (the A770 driver can segfault instead of
+  raising an out-of-memory error). Stay at 32.
+- `fused_bn` autotunes its tile sizes on first use per layer shape (the first epoch of the first run is slower); Triton
+  caches the results on disk.
+- The cleanup-threshold setting made the stock BatchNorm path slower and erratic (434 -> 444-510 ms/step), so it is
+  only set with `fused_bn`.
+- MuSGD is what `optimizer=auto` picks for long runs (>10k iterations); short runs get AdamW, which is cheaper per step
+  on this GPU. Force `optimizer=MuSGD` when a short run should behave like a long one.
 - Tried and not used: `torch.compile` (slower, 591 vs 500 ms/step, though 3 GB less memory; needs `libze-dev` and
-  `intel-ocloc`), XPU graphs (the A770 driver has no graph record/replay), other Level Zero settings (copy engine,
-  v2 adapter: no gain).
+  `intel-ocloc`), an Inductor-compiled BatchNorm + SiLU (same speed as stock), XPU graphs (the A770 driver has no
+  graph record/replay), other Level Zero settings (copy engine, v2 adapter, batch size, driver in-order lists).
+- What is left per step: ~305 ms of GPU kernels (convolutions 114, fused BatchNorm ~66, concatenations 14, copies ~25)
+  and ~25 ms of GPU idle at the starts of the forward and backward passes and after GradScaler's inf check.
 - `bench_step.py` reproduces all of this: `mode=fixed|real|loader|opt` for timing, `stages=true` for a per-stage split,
-  `profile=<dir>` for a torch.profiler trace, `mode=parity|lossparity|optparity` for the numerical checks. Each patch
-  can be switched on separately (`launch_env= channels_last= sync_free= fast_musgd=`).
+  `profile=<dir>` for a torch.profiler trace, `mode=parity|lossparity|optparity` for the numerical checks (parity
+  includes `fused_bn`, `half_glue` and `fast_topk` variants against fp32). Each patch can be switched on separately
+  (`launch_env= channels_last= sync_free= fast_musgd= fused_bn= half_glue= fast_topk=`).
 
 ## 2. Pick an input size, export to ONNX
 
