@@ -39,11 +39,15 @@ The host needs the Intel compute runtime for the GPU (Ubuntu: `libze-intel-gpu1 
 
 ```
 python training/train_xpu.py cfg=training/cfg-yolo26.yaml data_root=/path/to/birds-3-57 \
-    epochs=120 project=runs/detect name=yolo26s_704 val=False
+    epochs=80 project=runs/detect name=yolo26s_704 val=False
 ```
 
 Most numbers in this README come from a 25-epoch run of this command (`epochs=25`); the 120-epoch run is in
-[INT8 after long training](#int8-after-long-training-the-head-clips). Ultralytics validates after the last epoch even
+[INT8 after long training](#int8-after-long-training-the-head-clips). 80 epochs is enough: validated every epoch, the
+120-epoch run (`runs/detect/yolo26s_704_3-57_120_fast`) levelled out at mAP50-95 0.774-0.780 from about epoch 60 (peak
+0.780 at epoch 73, 0.774 at 80, 0.772 at 120). Keep `epochs` at 67 or more: with `optimizer=auto` (the default)
+Ultralytics picks MuSGD (lr 0.01) only above 10000 optimizer iterations (151 per epoch at 64 images per step), and
+AdamW below that. Ultralytics validates after the last epoch even
 with `val=False`. On this 15 GB machine `workers=8` ran out of memory: stock Ultralytics gives validation twice the
 training workers (8 + 12 processes). `train_xpu.py` and `cfg-yolo26.yaml` now use 6 + 6 (`workers`, `val_workers`);
 resume a killed run with `resume=True`, which passes the same worker counts.
@@ -62,6 +66,49 @@ resume a killed run with `resume=True`, which passes the same worker counts.
   training + ~7 s of validation; 4.6 min with `speedups=false`), ~7 GB of GPU memory.
 - On an identical batch, the fp32 loss on the XPU matches the CPU to 1e-6 (relative) and the gradient norm to 1e-5. fp16
   deviates from fp32 by a similar amount on the CPU as on the XPU, so that gap comes from fp16, not from the GPU.
+
+### Next training run: 640 px, batch 64
+
+Decided 2026-11-09, not run yet: train the next model at 640 and move production to 640x384 (see
+[Input size](#input-size-640x384-was-768x448)). At 640 px, batch 64 fits on the A770 and is the fastest setting
+measured:
+
+```
+PYTORCH_ALLOC_CONF=expandable_segments:True UR_L0_DISABLE_USM_ALLOCATOR=1 \
+python training/train_xpu.py cfg=training/cfg-yolo26.yaml data_root=/path/to/birds-3-57 \
+    epochs=80 imgsz=640 batch=64 project=runs/detect name=yolo26s_640
+```
+
+| yolo26s, `bench_step.py` fixed batches, all speedups | images/s | GPU memory held by the process |
+|---|---|---|
+| 704 px, batch 32 (the recipe so far) | 108 | 9.6 GiB |
+| 640 px, batch 32 | 125 | |
+| **640 px, batch 64** | **139-142** | **14.1 GiB with the two settings below, 15.5 without** |
+| 672 px, batch 64, settings on, desktop off | 127 | 15.6 GiB |
+| 704 px, batch 64, settings on, desktop off | 91 (spills to host RAM) | 16.3 GiB |
+
+- About 30% faster than the 704 recipe: the training part of an epoch should drop from ~90 s to ~70 s.
+- Once the process holds more than about 15.5-15.8 GiB, the i915 driver moves GPU buffers out to host RAM and back
+  every step, and the step slows by 2-3x (see the batch size note below). The process holds more than PyTorch reports:
+  on top of PyTorch's reserve, Level Zero keeps ~2.7 GiB, mostly a pool of command lists. Per-process figures are in
+  `/proc/<pid>/fdinfo/*` (`drm-total-local0`, `drm-resident-local0`).
+- `PYTORCH_ALLOC_CONF=expandable_segments:True` lets PyTorch's caching allocator grow segments instead of keeping
+  rounded-up blocks (0.5-1 GiB less reserved). `UR_L0_DISABLE_USM_ALLOCATOR=1` turns off Level Zero's own memory pool
+  under PyTorch's (~0.7 GiB). Neither measured slower (704 px, batch 32: 107 vs 108 images/s). Set them in the
+  environment before Python starts. Together they give 640 px / batch 64 about 1.4 GiB of margin.
+- Keep the `UR_L0_COMMANDLISTS_CLEANUP_THRESHOLD=-1` that `train_xpu.py` sets: a threshold of 20 frees another ~1 GiB,
+  but every step is ~6% slower. A GPU synchronize in the middle of the step does not shrink the command-list pool.
+- The GNOME desktop on the A770's HDMI output holds ~0.4 GiB (more with a browser open). 640 px / batch 64 fit with it
+  running; stopping it (`sudo systemctl stop gdm3`) adds margin.
+- Recipe: with Ultralytics' `nbs=64` an optimizer step is still 64 images (64 x 1 instead of 32 x 2 accumulated), with
+  the same weight decay and MuSGD lr. BatchNorm averages over 64 images instead of 32, and validation runs at batch
+  128 (twice the training batch).
+- Not checked yet: validation at batch 128, the real data loader, and memory over a whole run. Start with
+  `stop_epochs=3 val=True` and watch `grep Shmem /proc/meminfo`: it stays flat when everything fits, and swings by
+  ~1 GB every step when the driver is moving memory.
+- Then the board files at 640x384: `export_onnx.py ... --imgsz 384 640`, `make_calib.py ... --imgsz 384 640`
+  (`calib384x640`), `convert_rknn.py`. The 704-trained 120-epoch model's 640x384 files, to compare against, are in
+  `runs/final120/r640/`.
 
 ### Training speed (`xpu_speedups.py`)
 
@@ -117,9 +164,15 @@ initializers (names, shapes, dtypes), and INT8 on the board matches FP32 for bot
 
 Notes:
 - The data loader is not a limit: 8 workers produce ~510 images/s; the training loop waits ~0.2 ms per batch.
-- Batch size: 48 fits (12 GB) but is only 2% faster per image, and with Ultralytics' `nbs=64` it changes the optimizer
-  step from 64 images (32 x 2 accumulated) to 48. 64 does not fit in 16 GB (the A770 driver can segfault instead of
-  raising an out-of-memory error). Stay at 32.
+- Batch size (re-measured with all the patches, `bench_step` fixed batches): 32 runs at 108 images/s with a 6.9 GB
+  peak. 48 fits (10.2 GB) but runs at 100 images/s, and with Ultralytics' `nbs=64` it changes the optimizer step from
+  64 images (32 x 2 accumulated) to 48. 64 now fits (13.5 GB of tensors; PyTorch reserves 14.7 of the card's 15.1 GiB)
+  but runs at 49 images/s. Its kernels take 8% less time per image than at 32, but the card is over-full: every step the
+  i915 driver moves about 1.8 GB of GPU buffers out to host RAM and back (system `Shmem` swings 1.2 -> 3.0 GB; nothing
+  is swapped), so ~0.8 s of each 1.3-1.4 s step runs no kernel. Before the patches 64 did not fit at all (the A770
+  driver can segfault instead of raising an out-of-memory error). With the memory settings and the desktop stopped it
+  still spills (91 images/s). At 704 px stay at 32; for 640 px see
+  [Next training run](#next-training-run-640-px-batch-64).
 - `fused_bn` autotunes its tile sizes on first use per layer shape (the first epoch of the first run is slower); Triton
   caches the results on disk.
 - The cleanup-threshold setting made the stock BatchNorm path slower and erratic (434 -> 444-510 ms/step), so it is
@@ -173,7 +226,7 @@ python training/export_onnx.py runs/detect/yolo26s_704/weights/last.pt --imgsz 4
   models are treated as RGB. See [Colour order](#colour-order) for whether it is worth it.
 - The metadata json records the two tensors the converter cuts at, found by graph structure.
 
-### Input size: why 768x448
+### Input size: 640x384 (was 768x448)
 
 The detector runs on frames as the cameras deliver them: `extract_birbs.py` asks for 1280x720. 864x486 is only the
 size of the saved videos. The validation set is about half 864x486 and half 1280x720 frames, and birds are about the
@@ -232,12 +285,16 @@ Change against 768x448, full validation set, F1 at conf 0.5 / mAP50-95:
 - Board, 640x384 against 768x448, both INT8, all 2164 frames (`runs/final120/r640/`): 252 vs 323 ms per 24-frame batch
   (22% less), F1 0.928 vs 0.934, mAP50-95 0.737 vs 0.754. INT8 costs more at 640x384 (FP32 to board: -0.021
   mAP50-95, against -0.009 at 768x448), mostly in the boxes of the smallest birds.
-- Training below 704 does not save much time on the A770 (3.6 vs 3.3 it/s at 512 vs 704).
+- Training below 704 used to save little time on the A770 (3.6 vs 3.3 it/s at 512 vs 704, before the GPU-side
+  speedups). The step is now GPU-bound: at batch 32, 640 runs at 125 images/s against 108 at 704, and 640 also fits
+  batch 64 (139-142 images/s).
 
-**Decision: 768x448.** 640x384 is the smallest usable input and the only cheaper option worth considering. On the board
-it costs about 0.6 points of F1 and 1.6 of mAP50-95 for 22% less inference time. At 768x448 the detector takes ~13.5 ms
-per frame, so two cameras at 10 fps use about a quarter of it. Revisit 640x384 if inference time gets tight (more
-cameras or a higher frame rate); below 640x384, retraining does not fix the loss.
+**Decision: 640x384** (2026-11-09; until then 768x448). 640x384 is the smallest usable input. With the 704-trained
+120-epoch model it costs about 0.6 points of F1 and 1.6 of mAP50-95 on the board for 22% less inference time (at
+768x448 the detector took ~13.5 ms per frame). Training at 640 is ~30% faster on the A770. The next model is trained at
+640 and exported at 640x384 ([Next training run](#next-training-run-640-px-batch-64)). Below 640x384, retraining does
+not fix the loss. Until that model exists, the export, calibration, accuracy and board sections of this README
+describe the 768x448 models.
 
 ## 3. Calibration set and conversion
 
