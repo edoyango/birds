@@ -27,6 +27,15 @@ Extra keys handled here (not passed to Ultralytics):
                 against the start of a full run). Ultralytics validates and saves on the stopping epoch.
     val_workers Dataloader workers for validation (default: the training `workers`). Stock Ultralytics uses
                 2x `workers`, capped at the CPU count.
+    prefetch    Batches each training worker keeps ready (default 2; Ultralytics 4). val_prefetch: the same for
+                validation workers (default 1; Ultralytics 2). At 640 px / batch 64 each training batch is ~79 MB of
+                shared memory, so Ultralytics' 6 x 4 is ~1.9 GB.
+    val_keep_workers  false (default): shut the validation workers down after each validation and fork new ones
+                at the next. true: Ultralytics' behaviour, workers and their next batches stay for the whole run
+                (~4 GB at 6 workers, batch 128).
+    val_period  Validate only every this many epochs (epochs 5, 10, ... for 5). Ultralytics still validates the
+                final epoch and any epoch where training stops. Skipped epochs have nan validation metrics in
+                results.csv and never become best.pt. Pass it again when resuming.
 
 Defaults: device=xpu, amp=True (fp16), workers=6 (training and validation). fp64 never reaches the GPU (see
 xpu_compat.py). On this 15 GB machine, workers=8 (8 training + 12 validation processes, each a fork of a ~6 GB
@@ -65,18 +74,52 @@ def make_data_yaml(root, names_yaml=None):
     return str(out)
 
 
-def set_val_workers(n):
-    """Give the validation dataloader n workers instead of Ultralytics' 2x `workers` (detection trainer)."""
+def set_loaders(val_workers, prefetch, val_prefetch, val_keep):
+    """Dataloader settings for the detection trainer that stock Ultralytics hard-codes.
+
+    val_workers: validation workers (Ultralytics: 2x `workers`). prefetch / val_prefetch: batches each training /
+    validation worker keeps ready (Ultralytics: 4 / 2). val_keep=False shuts the validation workers down after each
+    validation (Ultralytics keeps them, with their next batches, for the whole run).
+    """
     import ultralytics.models.yolo.detect.train as detect_train
+    from ultralytics.engine.trainer import BaseTrainer
 
     build = detect_train.build_dataloader
 
     def build_dataloader(dataset, *a, **kw):
-        if not dataset.augment:  # build_yolo_dataset sets augment only for mode="train"
-            kw["workers"] = n
-        return build(dataset, *a, **kw)
+        val = not dataset.augment  # build_yolo_dataset sets augment only for mode="train"
+        if val:
+            kw["workers"] = val_workers
+        loader = build(dataset, *a, **kw)
+        if loader.num_workers > 0:  # read when the workers start (first iteration), so it can be set here
+            loader.prefetch_factor = val_prefetch if val else prefetch
+        return loader
 
     detect_train.build_dataloader = build_dataloader
+
+    if not val_keep:
+        validate = BaseTrainer.validate
+
+        def validate_and_release(self):
+            try:
+                return validate(self)
+            finally:
+                if hasattr(self.test_loader, "reset"):
+                    self.test_loader.reset()  # join the workers; the next validation forks new ones
+
+        BaseTrainer.validate = validate_and_release
+
+
+def validate_every(n):
+    """on_train_epoch_end callback: let Ultralytics validate only after every n-th epoch."""
+
+    def callback(trainer):
+        trainer.args.val = (trainer.epoch + 1) % n == 0
+        if not trainer.args.val:  # validation is still forced on the final epoch or a stop, which overwrites these
+            trainer.metrics = {k: float("nan") for k in trainer.metrics}  # not the previous validation's numbers
+            trainer.fitness = None  # otherwise save_model copies this unvalidated epoch to best.pt
+
+    return callback
 
 
 def main():
@@ -91,6 +134,7 @@ def main():
     speedups = args.pop("speedups", True)
     stop_epochs = args.pop("stop_epochs", None)
     fused_bn = args.pop("fused_bn", True)
+    val_period = int(args.pop("val_period", 1))
     off = args.pop("speedups_off", None)
     off = [k for k in str(off).split(",") if k] if off else []
     if data_root:
@@ -101,6 +145,9 @@ def main():
     args.setdefault("amp", True)
     args.setdefault("workers", 6)  # also passed on resume=True, so it replaces the checkpoint's value
     val_workers = args.pop("val_workers", args["workers"])
+    prefetch = int(args.pop("prefetch", 2))
+    val_prefetch = int(args.pop("val_prefetch", 1))
+    val_keep = bool(args.pop("val_keep_workers", False))
     model_name = args.pop("model", "yolo26n.pt")
 
     if str(args["device"]).startswith("xpu"):
@@ -119,7 +166,7 @@ def main():
 
     from ultralytics import YOLO
 
-    set_val_workers(int(val_workers))
+    set_loaders(int(val_workers), prefetch, val_prefetch, val_keep)
     model = YOLO(model_name)
     if stop_epochs:
 
@@ -128,6 +175,8 @@ def main():
                 trainer.stop = True
 
         model.add_callback("on_train_epoch_end", stop_early)
+    if val_period > 1:
+        model.add_callback("on_train_epoch_end", validate_every(val_period))
     model.train(**args)
 
 
