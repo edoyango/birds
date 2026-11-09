@@ -50,7 +50,11 @@ Ultralytics picks MuSGD (lr 0.01) only above 10000 optimizer iterations (151 per
 AdamW below that. Ultralytics validates after the last epoch even
 with `val=False`. On this 15 GB machine `workers=8` ran out of memory: stock Ultralytics gives validation twice the
 training workers (8 + 12 processes). `train_xpu.py` and `cfg-yolo26.yaml` now use 6 + 6 (`workers`, `val_workers`);
-resume a killed run with `resume=True`, which passes the same worker counts.
+resume a killed run with `resume=True`, which passes the same worker counts. At 640 px / batch 64 even 6 + 6 filled
+the 4 GB swap after the first validation. Stock Ultralytics has each training worker keep 4 batches ready (6 x 4 x
+~79 MB = ~1.9 GB), and the validation workers stay alive for the whole run with their next batches (~4 GB at batch
+128). `train_xpu.py` now keeps 2 batches per training worker and 1 per validation worker (`prefetch`, `val_prefetch`),
+and shuts the validation workers down after each validation (`val_keep_workers=false`).
 
 - `device=xpu`, fp16 AMP. `torch.amp.GradScaler` uses float64 internally, which the A770 does not have, so
   `xpu_compat.py` swaps in a scaler that does the same arithmetic in float32 (the loss scale is a power of two, so the
@@ -61,7 +65,9 @@ resume a killed run with `resume=True`, which passes the same worker counts.
   of one run said mAP50-95 0.408 for weights that score 0.644). `train_xpu.py` fixes this by default (see
   [Training speed](#training-speed-xpu_speedupspy)): validation then takes ~7 s and `val=True` is affordable. Runs
   made with `speedups=false`, or before this change, should pass `val=False` and be evaluated with
-  `eval_detections.py` + `eval_map.py` (below).
+  `eval_detections.py` + `eval_map.py` (below). `val_period=5` (a `train_xpu.py` key) validates only every 5th
+  epoch, plus the last one. In `results.csv` the other epochs have `nan` validation columns, and they never become
+  `best.pt`. Pass it again with `resume=True`.
 - Speed: YOLO26s, 704 px, batch 32, 9650 images: about 1.7 min per epoch with the default speedups (~93 s of
   training + ~7 s of validation; 4.6 min with `speedups=false`), ~7 GB of GPU memory.
 - On an identical batch, the fp32 loss on the XPU matches the CPU to 1e-6 (relative) and the gradient norm to 1e-5. fp16
@@ -76,7 +82,7 @@ measured:
 ```
 PYTORCH_ALLOC_CONF=expandable_segments:True UR_L0_DISABLE_USM_ALLOCATOR=1 \
 python training/train_xpu.py cfg=training/cfg-yolo26.yaml data_root=/path/to/birds-3-57 \
-    epochs=80 imgsz=640 batch=64 project=runs/detect name=yolo26s_640
+    epochs=80 imgsz=640 batch=64 val_period=5 project=runs/detect name=yolo26s_640
 ```
 
 | yolo26s, `bench_step.py` fixed batches, all speedups | images/s | GPU memory held by the process |
