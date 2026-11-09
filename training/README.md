@@ -112,10 +112,19 @@ python training/train_xpu.py cfg=training/cfg-yolo26.yaml data_root=/path/to/bir
   the same weight decay and MuSGD lr. BatchNorm averages over 64 images instead of 32, and validation runs at batch
   128 (twice the training batch).
 - GPU memory crept up over the 80-epoch run: the process held ~14.5 GiB in the first epochs and 15.8-16.2 GiB in the
-  last ten, and system `Shmem` rose from 2.7 to 3.7 GB, so the driver probably started moving some buffers to host RAM.
-  It did not swing every step, and an epoch only slowed from 75.0 to 76.2 s. A longer run may reach the 2-3x slowdown:
-  watch `drm-total-local0` and `grep Shmem /proc/meminfo` (flat when everything fits, swinging by ~1 GB every step when
-  the driver is moving memory). Validation at batch 128 took 7-20 s.
+  last ten, and system `Shmem` rose from 2.7 to 3.7 GB, so the driver probably started moving some buffers to host RAM
+  (an epoch only slowed from 75.0 to 76.2 s). Cause: every Triton kernel launch (`fused_bn`, `fast_cat`; ~730 per
+  step) leaked a Level Zero event, 256 bytes of event pool. That is ~185 KiB per step, ~28 MiB per epoch and ~2.1 GiB
+  over the run, outside PyTorch's allocator (PyTorch's reserve stayed at 11.0-11.6 GiB). Triton 3.9 builds its XPU
+  launcher with SYCL's event-less submit unless the driver is an LTS release, and that path never frees the event
+  here. Fixed (2026-11-09): importing `xpu_fused_bn.py` makes Triton build the launcher with `queue.submit()`.
+  Measured with per-step logging over 6 epochs of this recipe: memory outside PyTorch at the end of each epoch went
+  832 -> 872 -> 899 -> 1017 -> 1044 -> 1072 MiB before and 813 -> 826 -> 827 -> 886 -> 886 -> 887 MiB with the fix
+  (the jump at epoch 4 is the first validation, once). Cost: epochs 2-6 took 71.9-72.3 s instead of 71.2-71.8 s
+  (~0.5 s, 0.7%; fixed-batch bench 465.8 vs 463.6 ms/step), about 40 s over 80 epochs. The leak did not depend on any
+  `UR_L0_*` setting, expandable segments, batch size or validation. To check a run: at the end of a step, VRAM in
+  `drm-total-local0` minus `torch.xpu.memory_reserved()` should stay flat. Within a step, Level Zero holds up to ~2 GiB
+  more than that, which is why 15-second samples swing. Validation at batch 128 took 7-20 s.
 - Host RAM was the bigger problem: with Ultralytics' loader defaults the 4 GB swap filled after the first validation
   (see the worker note at the top of this section). With `train_xpu.py`'s `prefetch=2`, `val_prefetch=1` and
   `val_keep_workers=false`, available RAM plus free swap stayed at 4-6 GB to the end.
@@ -189,7 +198,9 @@ Notes:
   still spills (91 images/s). At 704 px stay at 32; for 640 px see
   [Training at 640 px, batch 64](#training-at-640-px-batch-64).
 - `fused_bn` autotunes its tile sizes on first use per layer shape (the first epoch of the first run is slower); Triton
-  caches the results on disk.
+  caches the results on disk. Triton's cache key includes each kernel's line number, so any edit that shifts lines in
+  `xpu_fused_bn.py` recompiles and re-tunes all of its kernels on the next run (~4 min at 640 px / batch 64: at the
+  first step, and again at the epoch's smaller last batch).
 - The cleanup-threshold setting made the stock BatchNorm path slower and erratic (434 -> 444-510 ms/step), so it is
   only set with `fused_bn`.
 - MuSGD is what `optimizer=auto` picks for long runs (>10k iterations); short runs get AdamW, which is cheaper per step

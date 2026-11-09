@@ -38,7 +38,8 @@ fast_musgd   MuSGD (optimizer=auto for long runs) queues ~1150 small device ops 
              (XPU graphs would remove the CPU cost entirely but the A770 driver has no graph record/replay.)
 fused_bn     Ultralytics Conv's BatchNorm + SiLU in training mode as Triton kernels (xpu_fused_bn.py): 8 passes over
              the activation instead of 13, BN output not stored. fp32 inside, so not bit-identical (closer to fp32).
-             Eval/validation/export use the stock modules.
+             Eval/validation/export use the stock modules. Importing xpu_fused_bn also makes Triton launch with
+             queue.submit(): its default event-less submit leaks 256 B of VRAM per launch (~2 GiB per 80-epoch run).
 half_glue    fp16 where autocast needlessly promoted: the input image (uint8 -> fp16 channels_last in one kernel) and
              nearest upsampling (+ the Concat after it). Forward bit-identical.
 fast_topk    TaskAlignedAssigner's topk (3-15 ms per call on XPU) as k argmax passes; same set except among ties.
