@@ -17,11 +17,43 @@ to the stock kernels (different reduction order; SiLU sees the fp32 pre-activati
 fp16 they are closer to an fp32 reference than the stock kernels are (bench_step.py mode=bnparity).
 
 Tile sizes are autotuned per (shape, channels) on first use; results are cached on disk by Triton.
+
+Importing this module also switches Triton's XPU launcher to submits that return an event (_launch_with_events()):
+the default event-less submit leaks 256 bytes of VRAM per kernel launch.
 """
 import torch
 import triton
 import triton.language as tl
 from triton.runtime import driver as _driver
+
+
+def _launch_with_events():
+    """Build Triton's XPU launcher with queue.submit() instead of the event-less syclex::submit().
+
+    Triton 3.9 (XPU) compiles its launcher with event-less submit unless the GPU driver is an LTS release. With the
+    SYCL runtime of torch 2.15 (2026.1) on the A770 (driver 1.14.37020), every event-less submit leaves a Level Zero
+    event allocated: 256 bytes of event pool per launch, never freed. A training step launches ~730 Triton kernels,
+    so the process's VRAM grew by ~185 KiB per step (~2.1 GiB over 80 epochs at 640 px / batch 64), outside PyTorch's
+    allocator. With queue.submit() the event is returned and released: no growth, epochs ~0.7% slower (72.0 vs 71.6 s).
+    Triton only uses the LTS flag here to choose the submit call; kernel compilation reads it elsewhere and is
+    unchanged. Has to run before Triton's XPU driver is first used, which builds the launcher.
+    """
+    try:
+        from triton.backends.intel import driver as intel_driver
+    except ImportError:  # not the Intel backend
+        return
+    utils = getattr(intel_driver, "XPUUtils", None)
+    if utils is None or not hasattr(utils, "_is_lts"):
+        print("xpu_fused_bn: WARNING Triton's XPUUtils._is_lts not found; Triton launches may leak VRAM")
+        return
+    if getattr(utils, "_instance", None) is not None and getattr(utils._instance, "_initialized", False):
+        print("xpu_fused_bn: WARNING Triton's XPU launcher was built before xpu_fused_bn was imported; "
+              "Triton launches may leak 256 B of VRAM each")
+        return
+    utils._is_lts = lambda self: True
+
+
+_launch_with_events()
 
 # --- tuning -------------------------------------------------------------------------------------------------------
 
