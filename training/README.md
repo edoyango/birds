@@ -73,11 +73,11 @@ and shuts the validation workers down after each validation (`val_keep_workers=f
 - On an identical batch, the fp32 loss on the XPU matches the CPU to 1e-6 (relative) and the gradient norm to 1e-5. fp16
   deviates from fp32 by a similar amount on the CPU as on the XPU, so that gap comes from fp16, not from the GPU.
 
-### Next training run: 640 px, batch 64
+### Training at 640 px, batch 64
 
-Decided 2026-11-09, not run yet: train the next model at 640 and move production to 640x384 (see
-[Input size](#input-size-640x384-was-768x448)). At 640 px, batch 64 fits on the A770 and is the fastest setting
-measured:
+The current recipe (2026-11-09). The production model was trained with it (`runs/detect/yolo26s_640_3-57_80`,
+`last.pt`; see [Input size](#input-size-640x384-was-768x448) and [Deploy](#5-deploy)). At 640 px, batch 64 fits on
+the A770 and is the fastest setting measured:
 
 ```
 PYTORCH_ALLOC_CONF=expandable_segments:True UR_L0_DISABLE_USM_ALLOCATOR=1 \
@@ -93,7 +93,9 @@ python training/train_xpu.py cfg=training/cfg-yolo26.yaml data_root=/path/to/bir
 | 672 px, batch 64, settings on, desktop off | 127 | 15.6 GiB |
 | 704 px, batch 64, settings on, desktop off | 91 (spills to host RAM) | 16.3 GiB |
 
-- About 30% faster than the 704 recipe: the training part of an epoch should drop from ~90 s to ~70 s.
+- About 30% faster than the 704 recipe. In the real run an epoch took ~73 s of training (2.1 steps/s, ~134 images/s
+  with the data loader) against ~93 s at 704 px / batch 32. The 80-epoch run took about 1 h 40 min with
+  `val_period=5`.
 - Once the process holds more than about 15.5-15.8 GiB, the i915 driver moves GPU buffers out to host RAM and back
   every step, and the step slows by 2-3x (see the batch size note below). The process holds more than PyTorch reports:
   on top of PyTorch's reserve, Level Zero keeps ~2.7 GiB, mostly a pool of command lists. Per-process figures are in
@@ -109,12 +111,19 @@ python training/train_xpu.py cfg=training/cfg-yolo26.yaml data_root=/path/to/bir
 - Recipe: with Ultralytics' `nbs=64` an optimizer step is still 64 images (64 x 1 instead of 32 x 2 accumulated), with
   the same weight decay and MuSGD lr. BatchNorm averages over 64 images instead of 32, and validation runs at batch
   128 (twice the training batch).
-- Not checked yet: validation at batch 128, the real data loader, and memory over a whole run. Start with
-  `stop_epochs=3 val=True` and watch `grep Shmem /proc/meminfo`: it stays flat when everything fits, and swings by
-  ~1 GB every step when the driver is moving memory.
-- Then the board files at 640x384: `export_onnx.py ... --imgsz 384 640`, `make_calib.py ... --imgsz 384 640`
-  (`calib384x640`), `convert_rknn.py`. The 704-trained 120-epoch model's 640x384 files, to compare against, are in
-  `runs/final120/r640/`.
+- GPU memory crept up over the 80-epoch run: the process held ~14.5 GiB in the first epochs and 15.8-16.2 GiB in the
+  last ten, and system `Shmem` rose from 2.7 to 3.7 GB, so the driver probably started moving some buffers to host RAM.
+  It did not swing every step, and an epoch only slowed from 75.0 to 76.2 s. A longer run may reach the 2-3x slowdown:
+  watch `drm-total-local0` and `grep Shmem /proc/meminfo` (flat when everything fits, swinging by ~1 GB every step when
+  the driver is moving memory). Validation at batch 128 took 7-20 s.
+- Host RAM was the bigger problem: with Ultralytics' loader defaults the 4 GB swap filled after the first validation
+  (see the worker note at the top of this section). With `train_xpu.py`'s `prefetch=2`, `val_prefetch=1` and
+  `val_keep_workers=false`, available RAM plus free swap stayed at 4-6 GB to the end.
+- Validated mAP50-95 (640 px): 0.757 at epoch 40, 0.769 at 60 (`best.pt`), 0.766 at 80 (`last.pt`). On the board at
+  conf 0.5, `last.pt` was better than `best.pt` (F1 0.930 vs 0.922): the later epochs' scores are higher, so fewer birds
+  fall under 0.5. Deploy `last.pt`.
+- Board files at 640x384: `export_onnx.py ... --imgsz 384 640`, `make_calib.py ... --imgsz 384 640`
+  (`calib384x640`), `convert_rknn.py`. Results in `runs/final640/RESULTS.txt`.
 
 ### Training speed (`xpu_speedups.py`)
 
@@ -178,7 +187,7 @@ Notes:
   is swapped), so ~0.8 s of each 1.3-1.4 s step runs no kernel. Before the patches 64 did not fit at all (the A770
   driver can segfault instead of raising an out-of-memory error). With the memory settings and the desktop stopped it
   still spills (91 images/s). At 704 px stay at 32; for 640 px see
-  [Next training run](#next-training-run-640-px-batch-64).
+  [Training at 640 px, batch 64](#training-at-640-px-batch-64).
 - `fused_bn` autotunes its tile sizes on first use per layer shape (the first epoch of the first run is slower); Triton
   caches the results on disk.
 - The cleanup-threshold setting made the stock BatchNorm path slower and erratic (434 -> 444-510 ms/step), so it is
@@ -295,12 +304,33 @@ Change against 768x448, full validation set, F1 at conf 0.5 / mAP50-95:
   speedups). The step is now GPU-bound: at batch 32, 640 runs at 125 images/s against 108 at 704, and 640 also fits
   batch 64 (139-142 images/s).
 
-**Decision: 640x384** (2026-11-09; until then 768x448). 640x384 is the smallest usable input. With the 704-trained
-120-epoch model it costs about 0.6 points of F1 and 1.6 of mAP50-95 on the board for 22% less inference time (at
-768x448 the detector took ~13.5 ms per frame). Training at 640 is ~30% faster on the A770. The next model is trained at
-640 and exported at 640x384 ([Next training run](#next-training-run-640-px-batch-64)). Below 640x384, retraining does
-not fix the loss. Until that model exists, the export, calibration, accuracy and board sections of this README
-describe the 768x448 models.
+**Decision: 640x384** (2026-11-09; until then 768x448). 640x384 is the smallest usable input. Below it, retraining does
+not fix the loss.
+
+The deployed model is trained at 640 and exported at 640x384
+([Training at 640 px, batch 64](#training-at-640-px-batch-64)). On the board, all 2164 validation images, conf 0.5,
+against the 704-trained 120-epoch model at 768x448 that it replaced (`runs/final640/RESULTS.txt`):
+
+| | precision | recall | F1 | mAP50-95 | ms per 24-frame batch |
+|---|---|---|---|---|---|
+| 704-trained, 768x448 (replaced) | 0.953 | 0.917 | 0.934 | 0.754 | 345 |
+| **640-trained, 640x384 (deployed)** | **0.958** | **0.903** | **0.930** | **0.741** | **247 (-28%)** |
+
+- F1 is 0.005 lower (95% interval -0.011 to +0.002). Recall is 1.3 points lower (48 more of 3582 birds missed), and
+  there are 20 fewer false detections. A lower threshold does not win it back (F1 0.926-0.930 from 0.25 to 0.5).
+- The misses are small birds. The two models recall the same above 48 px (shorter side, at 640 px wide), and the
+  640x384 model loses 1-4 points below that. So most of the extra misses are sparrows (27 more of 1317), then doves
+  (11 more of 817), starlings (7 more of 133) and wattlebirds (6 more of 421). Mynas are 6 better. It confuses species
+  less often (35 against 46 detected as the wrong class).
+- Training at 640 instead of 704 barely changes the model at 640x384: the 704-trained model there scored F1 0.928,
+  mAP50-95 0.737. Most of the cost is the input size, not the training.
+
+**Why 640 was chosen:** the training performance improvements (about 30% faster per epoch on the A770, with batch 64
+fitting) are more important than missing some sparrows, which are less interesting birds. The 28% faster inference on
+the board comes with it.
+
+The export, calibration and accuracy sections below still use the 768x448 commands and numbers as their examples; for
+640x384 pass `--imgsz 384 640` and use `calib384x640`.
 
 ## 3. Calibration set and conversion
 
@@ -397,23 +427,27 @@ precision and recall at 0.5 match FP32 (0.953 / 0.915).
 
 - `Dockerfile` pins `librknnrt.so` to `RKNN_RUNTIME_VERSION=2.5.0`. Keep it equal to the toolkit that converted the
   model.
-- `docker-compose.yml` mounts `models/yolo26s-768x448-i8-bs24.rknn` (stored with Git LFS) at `/app/models/birbs.rknn`.
-  It is the 120-epoch yolo26s (`runs/detect/yolo26s_704_3-57_120`, `last.pt`) exported with the head clips (B = 14).
-  To deploy another model, copy it into `models/` and change the mount; the batch size it was converted with must match
-  the last argument of the service's `command`.
+- `docker-compose.yml` mounts `models/yolo26s-640x384-i8-bs24.rknn` (stored with Git LFS) at `/app/models/birbs.rknn`.
+  It is the yolo26s trained 80 epochs at 640 (`runs/detect/yolo26s_640_3-57_80`, `last.pt`), exported at 640x384 with
+  the head clips (B = 16) and calibrated on `calib384x640`. It replaced `yolo26s-768x448-i8-bs24.rknn` (704-trained, 120
+  epochs, B = 14) on 2026-11-09; see [Input size](#input-size-640x384-was-768x448) for why. To deploy another model,
+  copy it into `models/` and change the mount; the batch size it was converted with must match the last argument of
+  the service's `command`.
 - `--conf` / `BIRDS_CONF` default to 0.5. For the model in `models/`, pooled over all classes on the board, all 2164
   validation images (3582 labelled birds):
 
   | conf | precision | recall | F1 | false detections per frame |
   |---|---|---|---|---|
-  | 0.25 | 0.928 | 0.933 | 0.930 | 0.121 |
-  | 0.30 | 0.934 | 0.930 | 0.932 | 0.109 |
-  | 0.40 | 0.944 | 0.924 | 0.934 | 0.091 |
-  | **0.50** | **0.953** | **0.916** | **0.934** | **0.074** |
-  | 0.60 | 0.959 | 0.906 | 0.932 | 0.064 |
-  | 0.70 | 0.967 | 0.891 | 0.928 | 0.050 |
+  | 0.25 | 0.929 | 0.923 | 0.926 | 0.116 |
+  | 0.30 | 0.936 | 0.921 | 0.928 | 0.104 |
+  | 0.40 | 0.944 | 0.911 | 0.927 | 0.089 |
+  | 0.45 | 0.952 | 0.908 | 0.930 | 0.076 |
+  | **0.50** | **0.958** | **0.903** | **0.930** | **0.066** |
+  | 0.60 | 0.965 | 0.889 | 0.925 | 0.054 |
+  | 0.70 | 0.973 | 0.866 | 0.916 | 0.039 |
 
-  With the head clips, the board's scores match FP32's (the F1-optimal threshold is 0.48 on the board, 0.47 in FP32).
+  With the head clips, the board's scores match FP32's (for the 768x448 model the F1-optimal threshold was 0.48 on the
+  board, 0.47 in FP32).
   The 25-epoch model's INT8 scores ran lower than FP32's (F1-optimal 0.26 vs 0.42), which is why the default used to be
   0.25. The cause is the class-feature quantization in
   [INT8 after long training](#int8-after-long-training-the-head-clips), at a smaller scale (about 0.5 logit).

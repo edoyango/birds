@@ -84,7 +84,7 @@ services:
       - /bird-detections:/output
       - /etc/localtime:/etc/localtime:ro
       # The batch size (last command argument) must match the one the model was converted with (training/README.md)
-      - ./models/yolo26s-768x448-i8-bs24.rknn:/app/models/birbs.rknn
+      - ./models/yolo26s-640x384-i8-bs24.rknn:/app/models/birbs.rknn
     environment:
       - BIRDS_CONF=${BIRDS_CONF:-0.5}
     restart: unless-stopped
@@ -110,7 +110,7 @@ services:
     volumes:
       - /bird-detections:/output
       - /etc/localtime:/etc/localtime:ro
-      - ./models/yolo26s-768x448-i8-bs24.rknn:/app/models/birbs.rknn
+      - ./models/yolo26s-640x384-i8-bs24.rknn:/app/models/birbs.rknn
     environment:
       - BIRDS_CONF=${BIRDS_CONF:-0.5}
     restart: unless-stopped
